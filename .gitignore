@@ -1,0 +1,15 @@
+# Rust
+/target
+
+# Node
+node_modules/
+/dist
+
+# Editors / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Local Claude Code preview config
+.claude/launch.json
