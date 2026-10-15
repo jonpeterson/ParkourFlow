@@ -18,13 +18,13 @@ const nodeTypes = { metadata: MetadataNode };
 
 function portType(nodes: MetadataNodeType[], nodeId: string, handle: string | null, side: "inputs" | "outputs") {
   const node = nodes.find((n) => n.id === nodeId);
-  return node?.data.descriptor[side].find((p) => p.name === handle)?.stream_type;
+  return node?.data.descriptor[side].find((p) => p.name === handle)?.data_type;
 }
 
 // Lay the built-in nodes out left to right as a demo graph.
 function initialNodes(descriptors: NodeDescriptor[]): MetadataNodeType[] {
   return descriptors.map((descriptor, i) => ({
-    id: `${descriptor.id}-${i}`,
+    id: `${descriptor.type_id}-${i}`,
     type: "metadata",
     position: { x: 80 + i * 300, y: 160 },
     data: { descriptor },

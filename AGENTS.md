@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working on ParkourFlow. Read [README.
 
 ## Project state
 
-Hello-world scaffold. The Rust runtime exposes node metadata through Tauri commands, and the React Flow canvas renders it. There is no graph execution yet.
+Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state). The UI shows node metadata from the runtime but doesn't yet edit a backend workflow. There is no graph execution yet.
 
 ## Layout
 
@@ -25,7 +25,8 @@ Do not break these rules without an explicit design decision from the maintainer
 5. **Avoid copies.** Pass data by ownership transfer, borrowing, or shared reference (e.g. `Arc`) where practical. GPU resources pass as handles between compatible nodes.
 6. **Don't force one scheduler.** Tokio is for I/O and control-plane work. Do not assume every high-throughput stream runs as an async task. DSP (fixed sample blocks) and GPU/video (resource-aware, explicitly synchronized) may need their own execution domains.
 7. **Streams carry metadata.** Keep timestamps, sequence numbers, formats, dimensions, sample rates, and capture metadata with the payload. Do not drop them in transit.
-8. **The runtime owns the lifecycle.** Graph construction, validation, startup, shutdown, cancellation, node failure handling, and config propagation live in Rust, not the UI.
+8. **Configuration and runtime state stay separate.** `Workflow` (groups, nodes, ports, connections, buffer sizes) holds no runtime data. `WorkflowState` (node status, buffer contents) is keyed by workflow ids and synced with `WorkflowState::reconcile`. Don't put status, buffers, or other runtime data on config types.
+9. **The runtime owns the lifecycle.** Graph construction, validation, startup, shutdown, cancellation, node failure handling, and config propagation live in Rust, not the UI.
 
 ## Node conventions
 

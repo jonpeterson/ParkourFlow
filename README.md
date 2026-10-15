@@ -79,6 +79,48 @@ Because each edge carries its own contract, ParkourFlow can support ordinary rec
 └──────────────────────────────────────────┘
 ```
 
+### Workflow model
+
+ParkourFlow has a single concurrent user, so a workflow and its runtime state are both held **in memory**. Saving and loading workflows will come later.
+
+A workflow is split into two halves that are kept apart:
+
+| | **Configuration** (`Workflow`) | **Runtime state** (`WorkflowState`) |
+| --- | --- | --- |
+| Holds | Groups, nodes, ports, connections, buffer sizes | Node status, connection buffer contents |
+| Changed by | Editor operations (add node, connect, …) | The runtime while the graph executes |
+| Persisted | Yes, eventually (import/export) | No; rebuilt from the configuration |
+
+State is keyed by the configuration's ids. After the configuration changes, `WorkflowState::reconcile` adds state for new nodes and connections, drops state for removed ones, and applies new buffer sizes.
+
+```
+Workflow
+└── Group (root)
+    ├── Node  "Capture"   source     out: packets <Packet>
+    └── Group "Parsing"
+        ├── Node "Parse"  processor  in: packets <Packet>   out: messages <DnsMessage>
+        └── Node "Write"  sink       in: records <DnsMessage>
+
+Connections (workflow level; may cross groups)
+    Capture.packets ──▶ Parse.packets     buffer_capacity: 64
+    Parse.messages  ──▶ Write.records     buffer_capacity: 8
+```
+
+- **Groups.** The top level of a workflow is a root group. A group holds nodes and child groups, so workflows form a tree.
+- **Nodes** are one of three kinds, which decide their ports:
+
+  | Kind | Input ports | Output ports |
+  | --- | --- | --- |
+  | Source | none | one or more |
+  | Processor | one or more | one or more |
+  | Sink | one or more | none |
+
+- **Ports** have a name and a **data type** such as `Packet`, `Frame`, `Texture`, `Audio`, or `Record`. Node modules can define more data types.
+- **Connections** join a node's output port, which emits data, to another node's input port, which receives it. A connection is only allowed when both ports carry the same data type. One output can feed many inputs, but each input accepts only one connection.
+- **Buffers.** Each connection has a configurable `buffer_capacity`. At runtime it gets a bounded FIFO of stream items. A full buffer refuses new items rather than growing; the policy for what happens then (wait, drop, keep latest) comes later.
+- **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message.
+- **Stream items** carry a sequence number, an optional timestamp, and a payload. The payload is shared by reference (`Arc`), not copied.
+
 ### Node definitions
 
 Nodes are **driven by metadata**. Each node declares its port types, properties, defaults, category, and configuration schema. The React UI renders most node types from this metadata alone, without custom frontend code.
@@ -106,7 +148,7 @@ At first, node modules are **statically linked**: built-in crates for media, net
 
 ## Roadmap (initial)
 
-- [ ] Core graph model: nodes, typed ports, edges, validation
+- [x] Core graph model: nodes, typed ports, edges, groups, validation
 - [ ] Edge transport with configurable buffering/backpressure policies
 - [ ] Graph lifecycle: build, start, stop, cancel, error propagation
 - [ ] Node metadata schema and JSON workflow format
@@ -149,7 +191,11 @@ The app opens a window with a canvas showing the built-in demo nodes. You can on
 ### Repository layout
 
 ```
-crates/parkourflow-core/  Rust runtime: graph model, node metadata (no Tauri dependency)
+crates/parkourflow-core/  Rust runtime (no Tauri dependency)
+  src/workflow.rs         workflow configuration: groups, nodes, ports, connections
+  src/state.rs            runtime state: node status, connection buffers
+  src/buffer.rs           bounded connection buffer and stream items
+  src/catalog.rs          node type descriptors
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
 ui/                       React + TypeScript frontend (Vite root)
   src/runtime.ts          typed wrappers for Tauri commands

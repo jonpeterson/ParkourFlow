@@ -3,18 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type NodeKind = "source" | "processor" | "sink";
 
-export interface PortDescriptor {
+export interface Port {
   name: string;
-  stream_type: string;
+  data_type: string;
 }
 
 export interface NodeDescriptor {
-  id: string;
+  type_id: string;
   label: string;
   kind: NodeKind;
   category: string;
-  inputs: PortDescriptor[];
-  outputs: PortDescriptor[];
+  inputs: Port[];
+  outputs: Port[];
 }
 
 export const listNodeTypes = () => invoke<NodeDescriptor[]>("list_node_types");

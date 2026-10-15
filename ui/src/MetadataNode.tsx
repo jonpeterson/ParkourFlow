@@ -17,14 +17,14 @@ export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
           {descriptor.inputs.map((p) => (
             <div key={p.name} className="pf-port pf-port--in">
               <Handle type="target" position={Position.Left} id={p.name} />
-              {p.name} <em>{p.stream_type}</em>
+              {p.name} <em>{p.data_type}</em>
             </div>
           ))}
         </div>
         <div>
           {descriptor.outputs.map((p) => (
             <div key={p.name} className="pf-port pf-port--out">
-              {p.name} <em>{p.stream_type}</em>
+              {p.name} <em>{p.data_type}</em>
               <Handle type="source" position={Position.Right} id={p.name} />
             </div>
           ))}
