@@ -162,3 +162,136 @@ body,
   text-align: left;
   cursor: pointer;
 }
+
+.pf-node__missing {
+  color: var(--pf-sink);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pf-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 280px;
+  padding: 12px;
+  overflow-y: auto;
+  border-left: 1px solid var(--pf-border);
+  background: var(--pf-panel);
+}
+
+.pf-inspector__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--pf-border);
+}
+
+.pf-inspector__header h2 {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 15px;
+}
+
+.pf-inspector__header p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.pf-inspector__empty {
+  margin: 0;
+  color: var(--pf-muted);
+}
+
+.pf-inspector__missing {
+  color: var(--pf-sink);
+  font-size: 12px;
+}
+
+.pf-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--pf-bg);
+  border: 1px solid var(--pf-border);
+  color: var(--pf-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.pf-badge--running { color: var(--pf-source); border-color: var(--pf-source); }
+.pf-badge--starting { color: var(--pf-processor); border-color: var(--pf-processor); }
+.pf-badge--error { color: #c53030; border-color: #c53030; }
+
+.pf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pf-field__label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pf-field__required { color: #c53030; }
+
+.pf-field__row {
+  display: flex;
+  gap: 6px;
+}
+
+.pf-field__row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.pf-field input:not([type="checkbox"]),
+.pf-field select,
+.pf-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--pf-border);
+  border-radius: 4px;
+  background: var(--pf-bg);
+  color: var(--pf-text);
+  font: inherit;
+}
+
+.pf-field input[type="checkbox"] { align-self: flex-start; }
+
+.pf-field button:not(.pf-link) {
+  padding: 4px 8px;
+  border: 1px solid var(--pf-border);
+  border-radius: 4px;
+  background: var(--pf-bg);
+  color: var(--pf-text);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pf-field__hint,
+.pf-field__error {
+  margin: 0;
+  font-size: 11px;
+}
+
+.pf-field__hint { color: var(--pf-muted); }
+.pf-field__error { color: #c53030; }
+
+.pf-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-processor);
+  font: inherit;
+  font-size: 11px;
+  font-weight: normal;
+  cursor: pointer;
+}

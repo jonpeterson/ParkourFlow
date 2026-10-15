@@ -179,6 +179,58 @@ Rules:
 - The channel uses only `std` synchronization (`Mutex`, `Condvar`, `Waker`), so it doesn't depend on Tokio.
 - Telemetry: `Edge::stats()` returns queue depth, effective capacity, and drop count. The UI reads them with the `connection_stats` command.
 
+### Node properties
+
+Each node type declares typed configuration fields, called **properties**, alongside its ports. The UI's inspector renders a form for the selected node from these declarations, so most node types need no frontend code.
+
+There is no "file node" or "device node" category. A CSV source, a PCAP file replay, and a live capture are just different node types that declare different properties:
+
+| Node type | Properties |
+| --- | --- |
+| CSV Source | `path` (file, open, `.csv`/`.tsv`, required), `delimiter` (enum), `has_header` (bool) |
+| PCAP File Source | `path` (file, open, `.pcap`/`.pcapng`, required), `realtime` (bool), `speed` (float, live) |
+| libpcap Source | `interface` (device, required), `filter` (string), `promiscuous` (bool), `snaplen` (integer, 64–262144) |
+| CSV Writer | `path` (file, save, `.csv`, required), `delimiter` (enum), `write_header` (bool) |
+
+#### Property types
+
+| Type | Inspector widget | Validation |
+| --- | --- | --- |
+| `bool` | Checkbox | |
+| `integer { min, max }` | Number input | Whole number within bounds |
+| `float { min, max, step }` | Number input | Finite number within bounds; integers are accepted |
+| `string { multiline }` | Text box or text area | |
+| `enum { options }` | Drop-down | One of the options |
+| `file { mode: open \| save, extensions }` | Path + **Browse…** (OS file dialog) | Extension matches, if any are listed |
+| `directory` | Path + **Browse…** (OS folder dialog) | |
+| `device { class }` | Drop-down of devices the runtime finds right now, e.g. `network_interface` | |
+
+Devices come and go while the app runs, so their options are not part of the node type. The UI asks the runtime with `list_device_options(class)` when the field is shown. No device backends exist yet, so every class currently returns an empty list and the inspector falls back to a text box.
+
+A file path is configuration, so it crosses the IPC boundary; the file's contents never do.
+
+#### Each property also declares
+
+- **`label`** and optional **`description`**, shown in the inspector.
+- **`default`**, which a new node starts with. Clearing a value restores its default.
+- **`required`**: the node cannot start until it has a value. The canvas and inspector flag missing required values.
+- **`apply`**: `live` values take effect on a running node; `restart` values (the default) need the node restarted, and the inspector warns before changing them on a running node.
+
+#### Values and validation
+
+Values are configuration. They live on each node in the `Workflow` (`Node::values`) and will be saved with it once import/export exists.
+
+- **On edit:** `set_property(node, name, value)` checks the value against the property's type and rejects it with a message, which the inspector shows under the field. `null` resets the value to its default.
+- **On start:** problems that depend on the outside world, like a missing file or an unplugged device, put the node in `ERROR` with a message. They are not rejected at edit time, because the outside world can change between editing and running.
+- **In node code:** a node reads its values as a typed struct with `Node::config::<T>()` (e.g. `struct CsvSourceConfig { path: PathBuf, has_header: bool }`) instead of handling raw JSON.
+
+The schema is a small hand-written type rather than JSON Schema, because JSON Schema cannot express "show a file picker" or "ask the runtime for devices" without custom extensions.
+
+#### Not yet decided
+
+- **Ports that depend on configuration.** An FFmpeg demuxer's outputs depend on the streams in its file, and a CSV's columns depend on its header. Ports are fixed per node type for now; later a node type may recompute its ports when a property changes, and the workflow would drop connections that no longer fit.
+- **Live vs. pausable at runtime.** Whether a source is live (see [Flow control](#flow-control)) can depend on its properties; a PCAP replay with `realtime` on behaves like a live source. The node will report this when it starts, not in its type.
+
 ### Node definitions
 
 Nodes are **driven by metadata**. Each node declares its port types, properties, defaults, category, and configuration schema. The React UI renders most node types from this metadata alone, without custom frontend code.
@@ -209,7 +261,8 @@ At first, node modules are **statically linked**: built-in crates for media, net
 - [x] Core graph model: nodes, typed ports, edges, groups, validation
 - [x] Edge transport: demand (credit) signaling, overflow policies, drop counters
 - [ ] Graph lifecycle: build, start, stop, cancel, error propagation
-- [ ] Node metadata schema and JSON workflow format
+- [x] Node metadata schema: typed properties, validation, inspector
+- [ ] JSON workflow import/export
 - [ ] Tauri shell with React Flow editor driven by node metadata
 - [ ] Control-plane commands and telemetry events
 - [ ] First node modules: files, structured records, libpcap, FFmpeg
@@ -253,13 +306,16 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/workflow.rs         workflow configuration: groups, nodes, ports, connections
   src/state.rs            runtime state: node status, connection buffers
   src/buffer.rs           bounded connection buffer and stream items
+  src/transport.rs        credit-based edge transport and overflow policies
   src/catalog.rs          node type descriptors
+  src/property.rs         typed node properties: schema, values, validation
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)
   src/runtime.ts          typed wrappers for Tauri commands
   src/App.tsx             canvas + node palette; edits call the runtime, then redraw
   src/MetadataNode.tsx    generic node renderer driven by node metadata
+  src/Inspector.tsx       generic property form for the selected node
 ```
 
 ## Contributing

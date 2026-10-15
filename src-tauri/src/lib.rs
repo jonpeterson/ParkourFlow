@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use parkourflow_core::{
-    ConnectionId, EdgeStats, GroupId, NodeDescriptor, NodeId, NodeState, OverflowPolicy, PortRef,
-    Workflow, WorkflowError, WorkflowState,
+    ConnectionId, DeviceOption, EdgeStats, GroupId, NodeDescriptor, NodeId, NodeState,
+    OverflowPolicy, PortRef, PropertyValue, Workflow, WorkflowError, WorkflowState,
 };
 use tauri::State;
 
@@ -154,9 +154,28 @@ fn set_overflow_policy(
     app.edit(|wf| wf.set_overflow_policy(id, policy))
 }
 
+/// Sets a node property. `value: null` resets it to its default, or clears
+/// it if it has none.
+#[tauri::command]
+fn set_property(
+    app: State<AppState>,
+    id: NodeId,
+    name: String,
+    value: Option<PropertyValue>,
+) -> Result<(), String> {
+    app.edit(|wf| wf.set_property(id, &name, value))
+}
+
+/// Lists the devices currently available for a device property's class.
+#[tauri::command]
+fn list_device_options(class: String) -> Vec<DeviceOption> {
+    parkourflow_core::device_options(&class)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new(Workflow::new("Untitled")))
         .invoke_handler(tauri::generate_handler![
             list_node_types,
@@ -173,6 +192,8 @@ pub fn run() {
             disconnect,
             set_buffer_capacity,
             set_overflow_policy,
+            set_property,
+            list_device_options,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ParkourFlow");
@@ -216,6 +237,21 @@ mod tests {
             .read(|s| s.state.edge_stats().collect::<BTreeMap<_, _>>())
             .unwrap();
         assert_eq!(stats[&conn].capacity, 1);
+    }
+
+    #[test]
+    fn property_edits_are_validated() {
+        let app = AppState::new(Workflow::new("test"));
+        let pcap = &parkourflow_core::builtin_nodes()[0];
+        let id = app
+            .edit(|wf| wf.add_node(wf.root(), "Capture", pcap))
+            .unwrap();
+        app.edit(|wf| wf.set_property(id, "snaplen", Some(1500.into())))
+            .unwrap();
+        let err = app
+            .edit(|wf| wf.set_property(id, "snaplen", Some(1.into())))
+            .unwrap_err();
+        assert_eq!(err, "`snaplen` must be between 64 and 262144");
     }
 
     #[test]

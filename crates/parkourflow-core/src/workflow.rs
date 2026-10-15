@@ -6,11 +6,13 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::NodeDescriptor;
 use crate::error::WorkflowError;
 use crate::node::{NodeKind, Port};
+use crate::property::{Property, PropertyValue};
 
 /// Buffer capacity used when a connection doesn't specify one.
 pub const DEFAULT_BUFFER_CAPACITY: usize = 64;
@@ -80,7 +82,7 @@ pub struct Group {
 }
 
 /// A node instance in a workflow.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Node {
     pub id: NodeId,
     /// The group this node belongs to.
@@ -91,9 +93,43 @@ pub struct Node {
     pub kind: NodeKind,
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
+    /// The configuration fields this node's type declares.
+    pub properties: Vec<Property>,
+    /// The current value of each property that has one. Properties without
+    /// a value or default are absent.
+    pub values: BTreeMap<String, PropertyValue>,
 }
 
 impl Node {
+    pub fn property(&self, name: &str) -> Option<&Property> {
+        self.properties.iter().find(|p| p.name == name)
+    }
+
+    pub fn value(&self, name: &str) -> Option<&PropertyValue> {
+        self.values.get(name)
+    }
+
+    /// Required properties that have no value (or an empty string). The node
+    /// cannot start until this is empty.
+    pub fn missing_required(&self) -> Vec<&str> {
+        self.properties
+            .iter()
+            .filter(|p| p.required)
+            .filter(|p| match self.values.get(&p.name) {
+                None => true,
+                Some(PropertyValue::String(s)) => s.is_empty(),
+                Some(_) => false,
+            })
+            .map(|p| p.name.as_str())
+            .collect()
+    }
+
+    /// Converts the node's values into a typed config struct, e.g.
+    /// `struct CsvSourceConfig { path: PathBuf, has_header: bool }`.
+    pub fn config<T: DeserializeOwned>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_value(serde_json::to_value(&self.values)?)
+    }
+
     pub fn input(&self, name: &str) -> Option<&Port> {
         self.inputs.iter().find(|p| p.name == name)
     }
@@ -318,6 +354,12 @@ impl Workflow {
                 kind: descriptor.kind,
                 inputs: descriptor.inputs.clone(),
                 outputs: descriptor.outputs.clone(),
+                properties: descriptor.properties.clone(),
+                values: descriptor
+                    .properties
+                    .iter()
+                    .filter_map(|p| Some((p.name.clone(), p.default.clone()?)))
+                    .collect(),
             },
         );
         self.group_mut(group)?.nodes.push(id);
@@ -414,6 +456,37 @@ impl Workflow {
             .ok_or(WorkflowError::ConnectionNotFound(id))
     }
 
+    /// Sets a node property after validating it against the property's type.
+    /// `None` resets the property to its default, or clears it if it has
+    /// none.
+    pub fn set_property(
+        &mut self,
+        id: NodeId,
+        name: &str,
+        value: Option<PropertyValue>,
+    ) -> Result<(), WorkflowError> {
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or(WorkflowError::NodeNotFound(id))?;
+        let property = node
+            .property(name)
+            .ok_or_else(|| WorkflowError::PropertyNotFound {
+                node: id,
+                property: name.into(),
+            })?;
+        match value.or_else(|| property.default.clone()) {
+            Some(value) => {
+                let value = property.validate(value)?;
+                node.values.insert(name.into(), value);
+            }
+            None => {
+                node.values.remove(name);
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_buffer_capacity(
         &mut self,
         id: ConnectionId,
@@ -444,13 +517,14 @@ mod tests {
     /// pcap source → DNS parser → CSV writer, with the parser and writer in a
     /// child group.
     fn dns_pipeline() -> (Workflow, GroupId, [NodeId; 3]) {
-        let [pcap, dns, csv]: [NodeDescriptor; 3] = builtin_nodes().try_into().unwrap();
+        let nodes = builtin_nodes();
+        let [pcap, dns, csv] = [&nodes[0], &nodes[1], &nodes[2]];
         let mut wf = Workflow::new("DNS capture");
         let root = wf.root();
         let group = wf.add_group(root, "Parsing").unwrap();
-        let source = wf.add_node(root, "Capture", &pcap).unwrap();
-        let parser = wf.add_node(group, "Parse", &dns).unwrap();
-        let sink = wf.add_node(group, "Write", &csv).unwrap();
+        let source = wf.add_node(root, "Capture", pcap).unwrap();
+        let parser = wf.add_node(group, "Parse", dns).unwrap();
+        let sink = wf.add_node(group, "Write", csv).unwrap();
         (wf, group, [source, parser, sink])
     }
 
@@ -638,5 +712,78 @@ mod tests {
             wf.set_overflow_policy(missing, OverflowPolicy::DropOldest),
             Err(WorkflowError::ConnectionNotFound(missing))
         );
+    }
+
+    #[test]
+    fn new_nodes_get_property_defaults() {
+        let (wf, _, [source, _, sink]) = dns_pipeline();
+        let source = wf.node(source).unwrap();
+        assert_eq!(
+            source.value("promiscuous"),
+            Some(&PropertyValue::Bool(true))
+        );
+        assert_eq!(
+            source.value("snaplen"),
+            Some(&PropertyValue::Integer(65_535))
+        );
+        assert_eq!(source.value("interface"), None);
+        assert_eq!(source.missing_required(), vec!["interface"]);
+        assert_eq!(wf.node(sink).unwrap().missing_required(), vec!["path"]);
+    }
+
+    #[test]
+    fn set_property_validates_and_resets() {
+        let (mut wf, _, [source, _, sink]) = dns_pipeline();
+
+        wf.set_property(source, "snaplen", Some(1500.into()))
+            .unwrap();
+        assert_eq!(
+            wf.node(source).unwrap().value("snaplen"),
+            Some(&PropertyValue::Integer(1500))
+        );
+        assert!(matches!(
+            wf.set_property(source, "snaplen", Some(1.into())),
+            Err(WorkflowError::InvalidPropertyValue { .. })
+        ));
+        assert!(matches!(
+            wf.set_property(source, "snaplen", Some("big".into())),
+            Err(WorkflowError::InvalidPropertyValue { .. })
+        ));
+        assert_eq!(
+            wf.set_property(source, "nope", Some(true.into())),
+            Err(WorkflowError::PropertyNotFound {
+                node: source,
+                property: "nope".into()
+            })
+        );
+
+        // `None` restores the default, or clears a property without one.
+        wf.set_property(source, "snaplen", None).unwrap();
+        assert_eq!(
+            wf.node(source).unwrap().value("snaplen"),
+            Some(&PropertyValue::Integer(65_535))
+        );
+        wf.set_property(sink, "path", Some("/tmp/out.csv".into()))
+            .unwrap();
+        assert!(wf.node(sink).unwrap().missing_required().is_empty());
+        wf.set_property(sink, "path", None).unwrap();
+        assert_eq!(wf.node(sink).unwrap().value("path"), None);
+    }
+
+    #[test]
+    fn node_config_deserializes_into_a_struct() {
+        #[derive(Deserialize)]
+        struct CsvWriterConfig {
+            path: std::path::PathBuf,
+            delimiter: String,
+            write_header: bool,
+        }
+        let (mut wf, _, [_, _, sink]) = dns_pipeline();
+        wf.set_property(sink, "path", Some("/tmp/out.csv".into()))
+            .unwrap();
+        let config: CsvWriterConfig = wf.node(sink).unwrap().config().unwrap();
+        assert_eq!(config.path, std::path::PathBuf::from("/tmp/out.csv"));
+        assert_eq!(config.delimiter, ",");
+        assert!(config.write_header);
     }
 }

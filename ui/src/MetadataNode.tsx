@@ -1,6 +1,6 @@
 // Generic node renderer: draws any node from its runtime metadata.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import type { NodeState, WorkflowNode } from "./runtime";
+import { missingRequired, type NodeState, type WorkflowNode } from "./runtime";
 
 export type MetadataNodeType = Node<
   { node: WorkflowNode; category: string; state?: NodeState },
@@ -9,6 +9,7 @@ export type MetadataNodeType = Node<
 
 export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
   const { node, category, state } = data;
+  const missing = missingRequired(node);
   return (
     <div className={`pf-node pf-node--${node.kind}`}>
       <div className="pf-node__header">
@@ -36,6 +37,7 @@ export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
       {state && (
         <div className="pf-node__status" title={state.error ?? undefined}>
           {state.status}
+          {missing.length > 0 && <span className="pf-node__missing"> · needs {missing.join(", ")}</span>}
         </div>
       )}
     </div>

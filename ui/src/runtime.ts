@@ -9,6 +9,39 @@ export interface Port {
   data_type: string;
 }
 
+export type FileMode = "open" | "save";
+
+/** The kind of value a property holds; decides the inspector widget. */
+export type PropertyType =
+  | { kind: "bool" }
+  | { kind: "integer"; min: number | null; max: number | null }
+  | { kind: "float"; min: number | null; max: number | null; step: number | null }
+  | { kind: "string"; multiline: boolean }
+  | { kind: "enum"; options: string[] }
+  | { kind: "file"; mode: FileMode; extensions: string[] }
+  | { kind: "directory" }
+  | { kind: "device"; class: string };
+
+/** File, directory, device, and enum values are strings. */
+export type PropertyValue = boolean | number | string;
+
+/** A configuration field declared by a node type. */
+export interface Property {
+  name: string;
+  label: string;
+  description?: string;
+  type: PropertyType;
+  default: PropertyValue | null;
+  required: boolean;
+  /** `live`: applied while running. `restart`: the node must restart. */
+  apply: "live" | "restart";
+}
+
+export interface DeviceOption {
+  id: string;
+  label: string;
+}
+
 export interface NodeDescriptor {
   type_id: string;
   label: string;
@@ -16,6 +49,7 @@ export interface NodeDescriptor {
   category: string;
   inputs: Port[];
   outputs: Port[];
+  properties: Property[];
 }
 
 // Ids serialize as plain numbers, and as string keys in the workflow's maps.
@@ -44,7 +78,14 @@ export interface WorkflowNode {
   kind: NodeKind;
   inputs: Port[];
   outputs: Port[];
+  properties: Property[];
+  /** Current values; properties with no value or default are absent. */
+  values: Record<string, PropertyValue>;
 }
+
+/** Required properties with no value (or an empty string). Mirrors `Node::missing_required`. */
+export const missingRequired = (node: WorkflowNode) =>
+  node.properties.filter((p) => p.required && (node.values[p.name] ?? "") === "").map((p) => p.name);
 
 /** What a connection does when an item arrives and its buffer is full. */
 export type OverflowPolicy = "block" | "drop_oldest" | "drop_newest" | "keep_latest";
@@ -111,3 +152,10 @@ export const setBufferCapacity = (id: ConnectionId, capacity: number) =>
   invoke<void>("set_buffer_capacity", { id, capacity });
 export const setOverflowPolicy = (id: ConnectionId, policy: OverflowPolicy) =>
   invoke<void>("set_overflow_policy", { id, policy });
+
+/** Sets a node property. `null` resets it to its default, or clears it if it has none. */
+export const setProperty = (id: NodeId, name: string, value: PropertyValue | null) =>
+  invoke<void>("set_property", { id, name, value });
+/** Lists the devices currently available for a device property's class. */
+export const listDeviceOptions = (deviceClass: string) =>
+  invoke<DeviceOption[]>("list_device_options", { class: deviceClass });

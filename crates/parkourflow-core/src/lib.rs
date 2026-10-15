@@ -11,12 +11,14 @@
 //! [`transport`] is the data plane between nodes: a bounded, credit-based
 //! channel per connection that applies the connection's overflow policy.
 //!
-//! [`catalog`] lists the node types this build provides.
+//! [`catalog`] lists the node types this build provides, and [`property`]
+//! defines the typed configuration fields they declare.
 
 pub mod buffer;
 pub mod catalog;
 pub mod error;
 pub mod node;
+pub mod property;
 pub mod state;
 pub mod transport;
 pub mod workflow;
@@ -25,6 +27,9 @@ pub use buffer::{ConnectionBuffer, Offer, Payload, StreamItem};
 pub use catalog::{builtin_nodes, NodeDescriptor};
 pub use error::WorkflowError;
 pub use node::{DataType, NodeKind, Port};
+pub use property::{
+    device_options, Apply, DeviceOption, FileMode, Property, PropertyType, PropertyValue,
+};
 pub use state::{NodeState, NodeStatus, WorkflowState};
 pub use transport::{
     Edge, EdgeStats, FanOut, Receiver, SendError, Sender, Sent, TryRecvError, TrySendError,

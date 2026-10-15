@@ -29,6 +29,12 @@ pub enum WorkflowError {
     InputAlreadyConnected(PortRef),
     #[error("{0} cannot connect to itself")]
     SelfConnection(NodeId),
+    #[error("duplicate property name `{0}`")]
+    DuplicateProperty(String),
+    #[error("{node} has no property `{property}`")]
+    PropertyNotFound { node: NodeId, property: String },
+    #[error("`{property}` {reason}")]
+    InvalidPropertyValue { property: String, reason: String },
     #[error("buffer capacity must be at least 1")]
     ZeroBufferCapacity,
 }

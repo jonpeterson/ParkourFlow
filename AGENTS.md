@@ -6,7 +6,7 @@ Guidance for AI coding agents (and humans) working on ParkourFlow. Read [README.
 
 Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state) and the edge transport (credit-based bounded channels with overflow policies). The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, and the canvas edits that workflow through Tauri commands. There is no graph execution yet.
 
-Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`.
+Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`, `set_property`, `list_device_options`.
 
 Decisions so far:
 - Edit commands go through `AppState::edit`, which applies the change to the `Workflow` and then calls `WorkflowState::reconcile`. Errors are returned to JS as strings (the `WorkflowError` message).
@@ -43,6 +43,11 @@ Do not break these rules without an explicit design decision from the maintainer
 
 - A node declares its ports, port types, properties, defaults, category, and configuration schema as **metadata**. The UI renders nodes from this metadata.
 - Prefer extending the metadata schema over writing node-specific React components. Add custom frontend code only when a node genuinely needs a bespoke inspector or visualization.
+- **Configuration fields are typed properties** (`crates/parkourflow-core/src/property.rs`), declared on the `NodeDescriptor`. Use the most specific type: `file` (with `mode` and `extensions`), `directory`, or `device` instead of `string` for paths and devices, and `enum` for fixed choices. Mark `required` and `apply: live` where they apply. See README → "Node properties".
+- Property values are configuration and live on `Node::values`. Validate type and range on edit (`Property::validate`); check outside-world conditions (file exists, device present) when the node starts, and report failures as `ERROR` status.
+- Node code reads its values with `Node::config::<T>()` into its own typed struct. Don't pass raw `PropertyValue`s around.
+- A new property type needs: a `PropertyType` variant, validation in `Property::validate`, a TS type in `ui/src/runtime.ts`, and a widget in `ui/src/Inspector.tsx`.
+- The file picker uses the official `tauri-plugin-dialog` (`dialog:default` permission).
 - Keep a node's processing code independent of the editor. A node must be runnable and testable without the UI.
 - Node modules are **statically linked** crates grouped by domain (media, networking, audio, GPU, files, structured data). Do not build a dynamic plugin system until the node API is stable.
 

@@ -11,6 +11,7 @@ import {
   type OnBeforeDelete,
   type XYPosition,
 } from "@xyflow/react";
+import { Inspector } from "./Inspector";
 import { MetadataNode, type MetadataNodeType } from "./MetadataNode";
 import * as runtime from "./runtime";
 import type { NodeDescriptor, NodeState, Workflow } from "./runtime";
@@ -102,6 +103,10 @@ export default function App() {
       .catch((e) => setUnavailable(String(e)));
   }, [refresh]);
 
+  const selected = nodes.filter((n) => n.selected);
+  const inspected = selected.length === 1 ? selected[0].data : undefined;
+  const redraw = useCallback(() => refresh().catch((e) => setError(String(e))), [refresh]);
+
   const addNode = (d: NodeDescriptor) =>
     edit(() => runtime.addNode(d.type_id, `${d.label} ${nodes.filter((n) => n.data.node.type_id === d.type_id).length + 1}`));
 
@@ -181,6 +186,7 @@ export default function App() {
             <Controls />
           </ReactFlow>
         </main>
+        <Inspector node={inspected?.node} state={inspected?.state} onChanged={redraw} />
       </div>
     </div>
   );
