@@ -51,7 +51,7 @@ Because each edge carries its own contract, ParkourFlow can support ordinary rec
 | **Typed ports and edges** | Each connection carries a declared stream type such as `VideoFrame`, `AudioBuffer`, `Packet`, `DnsMessage`, `Record`, or `GpuTexture`. The editor rejects incompatible connections before execution. |
 | **Streams, not messages** | An edge is a continuous sequence of values, not a series of RPC-style calls. A video edge is "a stream of frames," not repeated commands to process a frame. |
 | **Native data plane** | High-volume payloads stay inside the Rust runtime. Frames, packet buffers, and GPU resources never cross into the Tauri/JavaScript UI, except as previews or aggregated telemetry. |
-| **Explicit buffering and backpressure** | Every edge has defined queueing behavior, so a slow consumer cannot cause unbounded memory growth. Policies include blocking, bounded buffering, dropping oldest/newest, and keeping only the latest item. |
+| **Demand-driven flow with explicit overflow** | Consumers grant producers capacity, so a slow consumer cannot cause unbounded memory growth. Each edge has an overflow policy (`Block`, `DropOldest`, `DropNewest`, `KeepLatest`) for producers that cannot wait. See [Flow control](#flow-control). |
 | **Ownership-aware buffers** | Data moves between nodes by ownership transfer, borrowing, or shared reference where practical, rather than being copied at every node. GPU resources pass as handles between compatible nodes. |
 | **Multiple execution domains** | Different streams use different scheduling. Network and record pipelines suit async tasks. DSP runs on fixed-size sample blocks. GPU and video pipelines use resource-aware scheduling with explicit synchronization. |
 | **Metadata alongside payloads** | Stream items can carry timestamps, sequence numbers, formats, dimensions, sample rates, capture metadata, and other attributes needed downstream. |
@@ -117,9 +117,49 @@ Connections (workflow level; may cross groups)
 
 - **Ports** have a name and a **data type** such as `Packet`, `Frame`, `Texture`, `Audio`, or `Record`. Node modules can define more data types.
 - **Connections** join a node's output port, which emits data, to another node's input port, which receives it. A connection is only allowed when both ports carry the same data type. One output can feed many inputs, but each input accepts only one connection.
-- **Buffers.** Each connection has a configurable `buffer_capacity`. At runtime it gets a bounded FIFO of stream items. A full buffer refuses new items rather than growing; the policy for what happens then (wait, drop, keep latest) comes later.
+- **Buffers.** Each connection has a configurable `buffer_capacity`. At runtime it gets a bounded FIFO of stream items. A full buffer refuses new items rather than growing; the connection's overflow policy decides what happens next (see [Flow control](#flow-control)).
 - **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message.
 - **Stream items** carry a sequence number, an optional timestamp, and a payload. The payload is shared by reference (`Arc`), not copied.
+
+### Flow control
+
+> **Status:** Design decision. Not implemented yet.
+
+ParkourFlow uses a **hybrid** model: demand flows upstream as the default, and each connection has an **overflow policy** for producers that cannot wait.
+
+Neither pure model fits every workload:
+
+- **Pure push** (sources emit as fast as they can; full buffers drop data) silently loses data in offline work. Transcoding a file or replaying a PCAP would drop frames whenever the consumer is slow, even though the producer could have waited. It also wastes work on items that end up dropped.
+- **Pure pull** (producers sit idle until asked) cannot pause live sources. A packet capture, camera, or microphone keeps producing whether anyone asks or not, so data piles up or is lost outside the runtime, where it cannot be seen or counted.
+
+What matters is whether a producer can pause:
+
+| Producer | Examples | Behavior |
+| --- | --- | --- |
+| **Pausable** | File reader, PCAP replay, decoder, most processors | Waits for demand. Lossless, with bounded memory. |
+| **Live** | Packet capture, camera, microphone, network socket | Never waits. If downstream has no capacity, the item is dropped by policy and counted. |
+
+#### Demand
+
+Each connection grants its producer **credit**: the number of free slots in its buffer. A producer sends at most that many items, and credit returns as the consumer takes items. Credit is granted in batches, not item by item, so demand adds no per-item round trip.
+
+#### Overflow policies
+
+Each connection has a policy for when an item arrives and the buffer is full:
+
+| Policy | Behavior | Typical use |
+| --- | --- | --- |
+| `Block` (default) | The producer waits for space. Backpressure propagates upstream. Nothing is lost. | File processing, recording, anything that must be complete |
+| `DropOldest` | Evict the item at the head of the queue to make room. | Live streams where fresh data matters more than completeness |
+| `DropNewest` | Discard the incoming item. | Live streams where already-queued data should be preserved |
+| `KeepLatest` | The buffer holds a single item, and each new item replaces it. | Previews, displays, UI telemetry |
+
+Rules:
+
+- **Live sources never block.** A live source on a `Block` connection still cannot wait. It drops the item itself and counts the drop, rather than stalling its capture loop and letting the OS discard data invisibly.
+- **Policies are per connection.** When one output feeds several inputs, each connection applies its own policy. With `Block` everywhere, the slowest consumer gates the producer. Making a less important branch, like a preview, lossy keeps the main path at full speed.
+- **Drops are visible.** The runtime counts drops per connection and reports them with queue depth, so loss is never silent.
+- **Independent of the scheduler.** A `Block` connection is a full queue the producer waits on, whether the producer is an async task, a dedicated thread, or a GPU work queue.
 
 ### Node definitions
 
@@ -149,7 +189,7 @@ At first, node modules are **statically linked**: built-in crates for media, net
 ## Roadmap (initial)
 
 - [x] Core graph model: nodes, typed ports, edges, groups, validation
-- [ ] Edge transport with configurable buffering/backpressure policies
+- [ ] Edge transport: demand (credit) signaling, overflow policies, drop counters
 - [ ] Graph lifecycle: build, start, stop, cancel, error propagation
 - [ ] Node metadata schema and JSON workflow format
 - [ ] Tauri shell with React Flow editor driven by node metadata

@@ -28,7 +28,9 @@ Do not break these rules without an explicit design decision from the maintainer
 1. **Payloads never cross into JavaScript.** Video frames, packet buffers, audio buffers, and GPU resources stay in the Rust runtime. Only control operations, configuration, status, telemetry, and previews (downscaled, sampled, or aggregated) go over Tauri IPC.
 2. **Control and data planes are separate.** Tauri commands and events are the control plane. Never use them to move stream data.
 3. **Every edge is typed.** Ports declare a stream type. Reject incompatible connections at validation time, before execution starts, not at runtime.
-4. **Every edge is bounded.** Every edge has an explicit buffering/backpressure policy (block, bounded queue, drop oldest, drop newest, latest-only). No unbounded queues in the data plane.
+4. **Every edge is bounded, and demand flows upstream.** Consumers grant producers credit (free buffer slots); producers send no more than that. Each connection has an overflow policy (`Block` default, `DropOldest`, `DropNewest`, `KeepLatest`) for when a producer can't wait. No unbounded queues in the data plane. See README → "Flow control"; this design is decided, so don't propose pure push or pure pull.
+   - Pausable producers (files, replay, decoders, most processors) wait for demand. Live sources (capture, camera, microphone, sockets) never block: when there is no capacity they drop by policy themselves.
+   - Every drop is counted per connection and reported as telemetry. Never drop silently.
 5. **Avoid copies.** Pass data by ownership transfer, borrowing, or shared reference (e.g. `Arc`) where practical. GPU resources pass as handles between compatible nodes.
 6. **Don't force one scheduler.** Tokio is for I/O and control-plane work. Do not assume every high-throughput stream runs as an async task. DSP (fixed sample blocks) and GPU/video (resource-aware, explicitly synchronized) may need their own execution domains.
 7. **Streams carry metadata.** Keep timestamps, sequence numbers, formats, dimensions, sample rates, and capture metadata with the payload. Do not drop them in transit.
