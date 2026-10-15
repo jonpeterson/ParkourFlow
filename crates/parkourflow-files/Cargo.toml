@@ -1,6 +1,6 @@
 [package]
 name = "parkourflow-files"
-description = "ParkourFlow file nodes: CSV source and writer"
+description = "ParkourFlow file nodes: CSV Source and CSV Writer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 parkourflow-core.workspace = true
 serde.workspace = true
+csv = "1"

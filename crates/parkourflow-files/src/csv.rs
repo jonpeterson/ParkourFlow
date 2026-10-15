@@ -1,7 +1,6 @@
 //! CSV Source and CSV Writer.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -38,17 +37,18 @@ struct CsvSourceConfig {
 /// it waits for credit, so nothing is dropped.
 pub struct CsvSource {
     path: PathBuf,
-    reader: RowReader<BufReader<File>>,
+    reader: RowReader<File>,
     has_header: bool,
 }
 
 impl CsvSource {
     pub fn build(node: &Node) -> Result<Box<dyn NodeRunner>, String> {
         let config: CsvSourceConfig = config(node)?;
+        let delimiter = delimiter(&config.delimiter)?;
         let file = File::open(&config.path)
             .map_err(|e| format!("Can't open {}: {e}", config.path.display()))?;
         Ok(Box::new(Self {
-            reader: RowReader::new(BufReader::new(file), delimiter(&config.delimiter)?),
+            reader: RowReader::new(file, delimiter).map_err(|e| e.to_string())?,
             path: config.path,
             has_header: config.has_header,
         }))
@@ -96,7 +96,7 @@ struct CsvWriterConfig {
 /// first record's column names as the header row.
 pub struct CsvWriter {
     path: PathBuf,
-    writer: RowWriter<BufWriter<File>>,
+    writer: RowWriter<File>,
     write_header: bool,
 }
 
@@ -104,10 +104,11 @@ impl CsvWriter {
     /// Creates (or truncates) the output file.
     pub fn build(node: &Node) -> Result<Box<dyn NodeRunner>, String> {
         let config: CsvWriterConfig = config(node)?;
+        let delimiter = delimiter(&config.delimiter)?;
         let file = File::create(&config.path)
             .map_err(|e| format!("Can't create {}: {e}", config.path.display()))?;
         Ok(Box::new(Self {
-            writer: RowWriter::new(BufWriter::new(file), delimiter(&config.delimiter)?),
+            writer: RowWriter::new(file, delimiter).map_err(|e| e.to_string())?,
             path: config.path,
             write_header: config.write_header,
         }))

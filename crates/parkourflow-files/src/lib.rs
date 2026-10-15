@@ -137,14 +137,11 @@ mod tests {
     fn malformed_input_is_an_error() {
         let dir = TempDir::new("bad");
         let (input, output) = (dir.0.join("in.csv"), dir.0.join("out.csv"));
-        std::fs::write(&input, "a,b\n1,\"open\n").unwrap();
+        std::fs::write(&input, b"a,b\n1,\xff\n").unwrap();
         let (wf, state, source, writer) = copy_pipeline(&input, &output, 8);
         let [read, write] = run_both(&wf, &state, [source, writer]);
         let err = read.unwrap_err();
-        assert!(
-            err.ends_with("line 2: quoted field is never closed"),
-            "{err}"
-        );
+        assert!(err.ends_with("line 2: not valid UTF-8 text"), "{err}");
         // The writer finishes cleanly; it got no records, so the file is
         // empty.
         assert_eq!(write, Ok(()));

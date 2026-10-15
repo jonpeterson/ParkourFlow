@@ -237,9 +237,9 @@ pub trait NodeRunner: Send + 'static {
 
 `parkourflow-files` implements CSV Source and CSV Writer, so a CSV Source wired to a CSV Writer copies a file. Rows travel as `Record` items: `columns` (the header, shared by every row of a file through an `Arc`) and `values`. The file contents stay in Rust; only the paths cross into the UI.
 
-- **CSV Source** reads `path` with `delimiter`; with `has_header` on, the first row becomes the column names. It is pausable, so it reads only as fast as downstream takes rows. A malformed row (such as an unclosed quote) is an `ERROR` naming the file and line.
+- **CSV Source** reads `path` with `delimiter`; with `has_header` on, the first row becomes the column names. It is pausable, so it reads only as fast as downstream takes rows. A row that can't be read (such as text that isn't UTF-8) is an `ERROR` naming the file and line.
 - **CSV Writer** creates (or truncates) `path` when it starts, writes the first record's column names as a header if `write_header` is on and there are any, then one row per record, and flushes when its input ends or it is stopped.
-- Parsing follows RFC 4180: quoted fields can hold the delimiter, line breaks, and `""`; rows end in `\n` or `\r\n`; blank lines are skipped; rows may differ in length. It is a small hand-written module (`format.rs`) for now.
+- Parsing and quoting use the [`csv`](https://crates.io/crates/csv) crate, behind a small `format.rs` interface: quoted fields can hold the delimiter, line breaks, and `""`; rows end in `\n` or `\r\n` (written as `\n`); blank lines are skipped; rows may differ in length.
 
 ### Node properties
 
@@ -380,7 +380,7 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/record.rs           Record, the payload of Record streams
 crates/parkourflow-files/ file nodes: CSV Source and CSV Writer
   src/csv.rs              the CSV node runners
-  src/format.rs           RFC 4180 row reader and writer
+  src/format.rs           CSV row reader and writer (wraps the csv crate)
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)
