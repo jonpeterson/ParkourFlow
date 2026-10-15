@@ -11,3 +11,5 @@ thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+# Only to test that edges work from Tokio tasks; the core does not depend on Tokio.
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }

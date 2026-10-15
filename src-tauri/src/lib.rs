@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use parkourflow_core::{
-    ConnectionId, GroupId, NodeDescriptor, NodeId, NodeState, PortRef, Workflow, WorkflowError,
-    WorkflowState,
+    ConnectionId, EdgeStats, GroupId, NodeDescriptor, NodeId, NodeState, OverflowPolicy, PortRef,
+    Workflow, WorkflowError, WorkflowState,
 };
 use tauri::State;
 
@@ -68,6 +68,13 @@ fn node_statuses(app: State<AppState>) -> Result<BTreeMap<NodeId, NodeState>, St
     })
 }
 
+/// Returns queue depth, capacity, and drop count of every connection, keyed
+/// by connection id.
+#[tauri::command]
+fn connection_stats(app: State<AppState>) -> Result<BTreeMap<ConnectionId, EdgeStats>, String> {
+    app.read(|s| s.state.edge_stats().collect())
+}
+
 /// Adds a node of type `type_id` to `group` (the root group if `None`).
 #[tauri::command]
 fn add_node(
@@ -104,16 +111,24 @@ fn remove_group(app: State<AppState>, id: GroupId) -> Result<(), String> {
 }
 
 /// Connects an output port to an input port. `buffer_capacity` defaults to
-/// [`parkourflow_core::DEFAULT_BUFFER_CAPACITY`].
+/// [`parkourflow_core::DEFAULT_BUFFER_CAPACITY`] and `overflow_policy` to
+/// [`OverflowPolicy::Block`].
 #[tauri::command]
 fn connect(
     app: State<AppState>,
     from: PortRef,
     to: PortRef,
     buffer_capacity: Option<usize>,
+    overflow_policy: Option<OverflowPolicy>,
 ) -> Result<ConnectionId, String> {
     let capacity = buffer_capacity.unwrap_or(parkourflow_core::DEFAULT_BUFFER_CAPACITY);
-    app.edit(|wf| wf.connect(from, to, capacity))
+    app.edit(|wf| {
+        let id = wf.connect(from, to, capacity)?;
+        if let Some(policy) = overflow_policy {
+            wf.set_overflow_policy(id, policy)?;
+        }
+        Ok(id)
+    })
 }
 
 #[tauri::command]
@@ -130,6 +145,15 @@ fn set_buffer_capacity(
     app.edit(|wf| wf.set_buffer_capacity(id, capacity))
 }
 
+#[tauri::command]
+fn set_overflow_policy(
+    app: State<AppState>,
+    id: ConnectionId,
+    policy: OverflowPolicy,
+) -> Result<(), String> {
+    app.edit(|wf| wf.set_overflow_policy(id, policy))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -139,6 +163,7 @@ pub fn run() {
             runtime_version,
             get_workflow,
             node_statuses,
+            connection_stats,
             add_node,
             remove_node,
             move_node,
@@ -147,6 +172,7 @@ pub fn run() {
             connect,
             disconnect,
             set_buffer_capacity,
+            set_overflow_policy,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ParkourFlow");
@@ -167,6 +193,29 @@ mod tests {
 
         app.edit(|wf| wf.remove_node(id).map(drop)).unwrap();
         assert!(app.read(|s| s.state.node(id).is_none()).unwrap());
+    }
+
+    #[test]
+    fn policy_edits_reach_the_edge() {
+        let app = AppState::new(Workflow::new("test"));
+        let nodes = parkourflow_core::builtin_nodes();
+        let conn = app
+            .edit(|wf| {
+                let source = wf.add_node(wf.root(), "Capture", &nodes[0])?;
+                let parser = wf.add_node(wf.root(), "Parse", &nodes[1])?;
+                wf.connect(
+                    PortRef::new(source, "packets"),
+                    PortRef::new(parser, "packets"),
+                    8,
+                )
+            })
+            .unwrap();
+        app.edit(|wf| wf.set_overflow_policy(conn, OverflowPolicy::KeepLatest))
+            .unwrap();
+        let stats = app
+            .read(|s| s.state.edge_stats().collect::<BTreeMap<_, _>>())
+            .unwrap();
+        assert_eq!(stats[&conn].capacity, 1);
     }
 
     #[test]

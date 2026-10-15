@@ -1,4 +1,4 @@
-//! Runtime state for a workflow: node status and connection buffers.
+//! Runtime state for a workflow: node status and connection edges.
 //!
 //! State is keyed by the ids in a [`Workflow`] but stored separately from it.
 //! After editing the workflow, call [`WorkflowState::reconcile`] to bring the
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::buffer::ConnectionBuffer;
+use crate::transport::{Edge, EdgeStats};
 use crate::workflow::{ConnectionId, NodeId, Workflow};
 
 /// Lifecycle status of a node.
@@ -45,14 +45,17 @@ impl NodeState {
 }
 
 /// Runtime state for every node and connection in a workflow.
+///
+/// Each connection has an [`Edge`]: its buffer, overflow policy, and drop
+/// counter.
 #[derive(Debug, Default)]
 pub struct WorkflowState {
     nodes: HashMap<NodeId, NodeState>,
-    buffers: HashMap<ConnectionId, ConnectionBuffer>,
+    edges: HashMap<ConnectionId, Edge>,
 }
 
 impl WorkflowState {
-    /// Creates state for `workflow`: every node stopped, every buffer empty.
+    /// Creates state for `workflow`: every node stopped, every edge empty.
     pub fn new(workflow: &Workflow) -> Self {
         let mut state = Self::default();
         state.reconcile(workflow);
@@ -62,24 +65,32 @@ impl WorkflowState {
     /// Brings the state in line with `workflow`:
     ///
     /// - removes state for nodes and connections that no longer exist,
-    /// - adds stopped nodes and empty buffers for new ones, and
-    /// - applies changed buffer capacities, dropping the oldest items if a
-    ///   buffer shrank.
+    ///   closing their edges,
+    /// - adds stopped nodes and empty edges for new ones, and
+    /// - applies changed buffer capacities and overflow policies, dropping
+    ///   (and counting) the oldest items if a buffer shrank.
     pub fn reconcile(&mut self, workflow: &Workflow) {
         self.nodes.retain(|id, _| workflow.node(*id).is_some());
-        self.buffers
-            .retain(|id, _| workflow.connection(*id).is_some());
+        self.edges.retain(|id, edge| {
+            let keep = workflow.connection(*id).is_some();
+            if !keep {
+                edge.close();
+            }
+            keep
+        });
 
         for node in workflow.nodes() {
             self.nodes.entry(node.id).or_default();
         }
         for connection in workflow.connections() {
-            let buffer = self
-                .buffers
+            let edge = self
+                .edges
                 .entry(connection.id)
-                .or_insert_with(|| ConnectionBuffer::with_capacity(connection.buffer_capacity));
-            if buffer.capacity() != connection.buffer_capacity {
-                buffer.set_capacity(connection.buffer_capacity);
+                .or_insert_with(|| Edge::for_connection(connection));
+            if edge.policy() != connection.overflow_policy
+                || edge.stats().capacity != connection.effective_capacity()
+            {
+                edge.configure(connection.buffer_capacity, connection.overflow_policy);
             }
         }
     }
@@ -92,12 +103,13 @@ impl WorkflowState {
         self.nodes.get_mut(&id)
     }
 
-    pub fn buffer(&self, id: ConnectionId) -> Option<&ConnectionBuffer> {
-        self.buffers.get(&id)
+    pub fn edge(&self, id: ConnectionId) -> Option<&Edge> {
+        self.edges.get(&id)
     }
 
-    pub fn buffer_mut(&mut self, id: ConnectionId) -> Option<&mut ConnectionBuffer> {
-        self.buffers.get_mut(&id)
+    /// Queue depth, capacity, and drop count of every connection.
+    pub fn edge_stats(&self) -> impl Iterator<Item = (ConnectionId, EdgeStats)> + '_ {
+        self.edges.iter().map(|(id, edge)| (*id, edge.stats()))
     }
 }
 
@@ -106,7 +118,7 @@ mod tests {
     use super::*;
     use crate::buffer::StreamItem;
     use crate::catalog::builtin_nodes;
-    use crate::workflow::PortRef;
+    use crate::workflow::{OverflowPolicy, PortRef};
 
     fn two_nodes() -> (Workflow, NodeId, NodeId, ConnectionId) {
         let nodes = builtin_nodes();
@@ -131,9 +143,10 @@ mod tests {
         for node in [source, parser] {
             assert_eq!(state.node(node).unwrap().status, NodeStatus::Stopped);
         }
-        let buffer = state.buffer(conn).unwrap();
-        assert!(buffer.is_empty());
-        assert_eq!(buffer.capacity(), 4);
+        let stats = state.edge(conn).unwrap().stats();
+        assert_eq!(stats.queue_depth, 0);
+        assert_eq!(stats.capacity, 4);
+        assert_eq!(stats.dropped, 0);
     }
 
     #[test]
@@ -159,23 +172,40 @@ mod tests {
             .node_mut(source)
             .unwrap()
             .set_status(NodeStatus::Running);
-        let buffer = state.buffer_mut(conn).unwrap();
+        let edge = state.edge(conn).unwrap().clone();
+        let tx = edge.sender();
+        let rx = edge.receiver();
         for i in 0..4 {
-            buffer.push(StreamItem::new(i, ())).unwrap();
+            tx.try_send(StreamItem::new(i, ())).unwrap();
         }
 
-        // Shrinking the buffer keeps the newest items; other state survives.
+        // Shrinking the buffer keeps the newest items and counts the drops;
+        // other state survives.
         wf.set_buffer_capacity(conn, 2).unwrap();
         state.reconcile(&wf);
-        let buffer = state.buffer(conn).unwrap();
-        assert_eq!(buffer.capacity(), 2);
-        assert_eq!(buffer.len(), 2);
+        let stats = edge.stats();
+        assert_eq!(
+            (stats.capacity, stats.queue_depth, stats.dropped),
+            (2, 2, 2)
+        );
+        assert_eq!(rx.try_recv().unwrap().sequence, 2);
         assert_eq!(state.node(source).unwrap().status, NodeStatus::Running);
 
-        // Removed nodes and connections lose their state.
+        // A policy change reaches the edge; KeepLatest holds one item.
+        wf.set_overflow_policy(conn, OverflowPolicy::KeepLatest)
+            .unwrap();
+        state.reconcile(&wf);
+        assert_eq!(edge.policy(), OverflowPolicy::KeepLatest);
+        assert_eq!(edge.stats().capacity, 1);
+        assert_eq!(state.edge_stats().count(), 1);
+
+        // Removed nodes and connections lose their state, and the edge
+        // closes so its producer and consumer stop.
         wf.remove_node(parser).unwrap();
         state.reconcile(&wf);
         assert!(state.node(parser).is_none());
-        assert!(state.buffer(conn).is_none());
+        assert!(state.edge(conn).is_none());
+        assert!(tx.is_closed());
+        assert!(tx.try_send(StreamItem::new(9, ())).is_err());
     }
 }

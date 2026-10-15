@@ -87,11 +87,11 @@ A workflow is split into two halves that are kept apart:
 
 | | **Configuration** (`Workflow`) | **Runtime state** (`WorkflowState`) |
 | --- | --- | --- |
-| Holds | Groups, nodes, ports, connections, buffer sizes | Node status, connection buffer contents |
+| Holds | Groups, nodes, ports, connections, buffer sizes, overflow policies | Node status, connection edges (buffer contents, drop counters) |
 | Changed by | Editor operations (add node, connect, …) | The runtime while the graph executes |
 | Persisted | Yes, eventually (import/export) | No; rebuilt from the configuration |
 
-State is keyed by the configuration's ids. After the configuration changes, `WorkflowState::reconcile` adds state for new nodes and connections, drops state for removed ones, and applies new buffer sizes.
+State is keyed by the configuration's ids. After the configuration changes, `WorkflowState::reconcile` adds state for new nodes and connections, drops state for removed ones, and applies new buffer sizes and overflow policies.
 
 ```
 Workflow
@@ -117,13 +117,13 @@ Connections (workflow level; may cross groups)
 
 - **Ports** have a name and a **data type** such as `Packet`, `Frame`, `Texture`, `Audio`, or `Record`. Node modules can define more data types.
 - **Connections** join a node's output port, which emits data, to another node's input port, which receives it. A connection is only allowed when both ports carry the same data type. One output can feed many inputs, but each input accepts only one connection.
-- **Buffers.** Each connection has a configurable `buffer_capacity`. At runtime it gets a bounded FIFO of stream items. A full buffer refuses new items rather than growing; the connection's overflow policy decides what happens next (see [Flow control](#flow-control)).
+- **Buffers.** Each connection has a configurable `buffer_capacity` and `overflow_policy`. At runtime it gets an *edge*: a bounded FIFO of stream items. A full buffer never grows; the connection's overflow policy decides what happens next (see [Flow control](#flow-control)).
 - **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message.
 - **Stream items** carry a sequence number, an optional timestamp, and a payload. The payload is shared by reference (`Arc`), not copied.
 
 ### Flow control
 
-> **Status:** Design decision. Not implemented yet.
+> **Status:** Implemented in `parkourflow-core` (`transport` module). Nodes and graph execution don't use it yet.
 
 ParkourFlow uses a **hybrid** model: demand flows upstream as the default, and each connection has an **overflow policy** for producers that cannot wait.
 
@@ -161,6 +161,24 @@ Rules:
 - **Drops are visible.** The runtime counts drops per connection and reports them with queue depth, so loss is never silent.
 - **Independent of the scheduler.** A `Block` connection is a full queue the producer waits on, whether the producer is an async task, a dedicated thread, or a GPU work queue.
 
+#### Implementation
+
+`transport::Edge` is the runtime half of a connection. It wraps the connection's `ConnectionBuffer` and policy, and `WorkflowState` holds one per connection. Producers and consumers take `Sender` and `Receiver` handles from it:
+
+| | Waits for credit on `Block` | Never waits |
+| --- | --- | --- |
+| Async task (any executor) | `send(item).await`, `recv().await` | `try_send`, `send_live`, `try_recv` |
+| Dedicated thread | `send_blocking`, `recv_blocking` | `try_send`, `send_live`, `try_recv` |
+
+- `Sender::credit()` is the number of free slots. A waiting `Block` producer is woken once at least half the buffer is free, which is the batched credit grant.
+- `send_live` is for live sources: on a full `Block` edge it drops the item and counts it instead of waiting.
+- `FanOut` sends one output to several edges. Lossy edges get the item first, then it waits on each full `Block` edge in turn.
+- `KeepLatest` uses an effective capacity of 1, whatever `buffer_capacity` says.
+- Shrinking a buffer or switching to `KeepLatest` drops the oldest items, and those drops are counted too.
+- An edge closes when its last `Sender` or its `Receiver` drops, or when its connection is removed. A closed edge fails sends; the receiver gets the remaining items and then the end of the stream.
+- The channel uses only `std` synchronization (`Mutex`, `Condvar`, `Waker`), so it doesn't depend on Tokio.
+- Telemetry: `Edge::stats()` returns queue depth, effective capacity, and drop count. The UI reads them with the `connection_stats` command.
+
 ### Node definitions
 
 Nodes are **driven by metadata**. Each node declares its port types, properties, defaults, category, and configuration schema. The React UI renders most node types from this metadata alone, without custom frontend code.
@@ -189,7 +207,7 @@ At first, node modules are **statically linked**: built-in crates for media, net
 ## Roadmap (initial)
 
 - [x] Core graph model: nodes, typed ports, edges, groups, validation
-- [ ] Edge transport: demand (credit) signaling, overflow policies, drop counters
+- [x] Edge transport: demand (credit) signaling, overflow policies, drop counters
 - [ ] Graph lifecycle: build, start, stop, cancel, error propagation
 - [ ] Node metadata schema and JSON workflow format
 - [ ] Tauri shell with React Flow editor driven by node metadata

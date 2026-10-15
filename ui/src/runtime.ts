@@ -46,11 +46,15 @@ export interface WorkflowNode {
   outputs: Port[];
 }
 
+/** What a connection does when an item arrives and its buffer is full. */
+export type OverflowPolicy = "block" | "drop_oldest" | "drop_newest" | "keep_latest";
+
 export interface Connection {
   id: ConnectionId;
   from: PortRef;
   to: PortRef;
   buffer_capacity: number;
+  overflow_policy: OverflowPolicy;
 }
 
 export interface Workflow {
@@ -69,11 +73,19 @@ export interface NodeState {
   error: string | null;
 }
 
+/** Telemetry for one connection. `capacity` is 1 under `keep_latest`. */
+export interface EdgeStats {
+  queue_depth: number;
+  capacity: number;
+  dropped: number;
+}
+
 export const listNodeTypes = () => invoke<NodeDescriptor[]>("list_node_types");
 export const runtimeVersion = () => invoke<string>("runtime_version");
 
 export const getWorkflow = () => invoke<Workflow>("get_workflow");
 export const nodeStatuses = () => invoke<Record<string, NodeState>>("node_statuses");
+export const connectionStats = () => invoke<Record<string, EdgeStats>>("connection_stats");
 
 /** Adds a node to `group`, or to the root group when `group` is null. */
 export const addNode = (typeId: string, name: string, group: GroupId | null = null) =>
@@ -84,9 +96,18 @@ export const moveNode = (id: NodeId, group: GroupId) => invoke<void>("move_node"
 export const addGroup = (parent: GroupId, name: string) => invoke<GroupId>("add_group", { parent, name });
 export const removeGroup = (id: GroupId) => invoke<void>("remove_group", { id });
 
-/** Connects an output port to an input port. Omit `bufferCapacity` for the runtime default. */
-export const connect = (from: PortRef, to: PortRef, bufferCapacity: number | null = null) =>
-  invoke<ConnectionId>("connect", { from, to, bufferCapacity });
+/**
+ * Connects an output port to an input port. Omit `bufferCapacity` and
+ * `overflowPolicy` for the runtime defaults (64, `block`).
+ */
+export const connect = (
+  from: PortRef,
+  to: PortRef,
+  bufferCapacity: number | null = null,
+  overflowPolicy: OverflowPolicy | null = null,
+) => invoke<ConnectionId>("connect", { from, to, bufferCapacity, overflowPolicy });
 export const disconnect = (id: ConnectionId) => invoke<void>("disconnect", { id });
 export const setBufferCapacity = (id: ConnectionId, capacity: number) =>
   invoke<void>("set_buffer_capacity", { id, capacity });
+export const setOverflowPolicy = (id: ConnectionId, policy: OverflowPolicy) =>
+  invoke<void>("set_overflow_policy", { id, policy });

@@ -6,6 +6,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::workflow::OverflowPolicy;
+
 /// A stream item's data. Shared by reference so passing an item along (or to
 /// several consumers) does not copy the payload.
 pub type Payload = Arc<dyn Any + Send + Sync>;
@@ -49,15 +51,31 @@ impl fmt::Debug for StreamItem {
     }
 }
 
+/// What [`ConnectionBuffer::offer`] did with an item.
+#[derive(Debug)]
+pub enum Offer {
+    /// The item was queued without dropping anything.
+    Queued,
+    /// The item was queued and the oldest queued item was dropped.
+    Evicted,
+    /// The buffer was full and the item was dropped.
+    Discarded,
+    /// The buffer is full and the policy is [`OverflowPolicy::Block`]: the
+    /// item is handed back so the producer can wait for space.
+    Full(StreamItem),
+}
+
 /// A bounded FIFO of stream items for one connection.
 ///
 /// The buffer never grows past its capacity: [`push`](Self::push) hands the
-/// item back when the buffer is full, so the caller decides whether to wait,
-/// drop it, or evict something else.
+/// item back when the buffer is full, and [`offer`](Self::offer) applies an
+/// overflow policy. Every item the buffer drops is counted in
+/// [`dropped`](Self::dropped).
 #[derive(Debug)]
 pub struct ConnectionBuffer {
     capacity: usize,
     items: VecDeque<StreamItem>,
+    dropped: u64,
 }
 
 impl ConnectionBuffer {
@@ -65,6 +83,7 @@ impl ConnectionBuffer {
         Self {
             capacity,
             items: VecDeque::with_capacity(capacity),
+            dropped: 0,
         }
     }
 
@@ -84,6 +103,22 @@ impl ConnectionBuffer {
         self.items.len() >= self.capacity
     }
 
+    /// Free slots: how many more items fit before the buffer is full.
+    pub fn free(&self) -> usize {
+        self.capacity.saturating_sub(self.items.len())
+    }
+
+    /// Total items this buffer has dropped, by overflow or by shrinking.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Counts an item dropped before it reached the buffer, such as a live
+    /// source's item on a full [`OverflowPolicy::Block`] connection.
+    pub fn record_drop(&mut self) {
+        self.dropped += 1;
+    }
+
     /// Appends an item, or returns it if the buffer is full.
     pub fn push(&mut self, item: StreamItem) -> Result<(), StreamItem> {
         if self.is_full() {
@@ -91,6 +126,39 @@ impl ConnectionBuffer {
         }
         self.items.push_back(item);
         Ok(())
+    }
+
+    /// Appends an item, applying `policy` if the buffer is full.
+    ///
+    /// [`OverflowPolicy::KeepLatest`] treats the buffer as full when it
+    /// holds an item, whatever its capacity.
+    pub fn offer(&mut self, item: StreamItem, policy: OverflowPolicy) -> Offer {
+        let limit = match policy {
+            OverflowPolicy::KeepLatest => 1,
+            _ => self.capacity,
+        };
+        if self.items.len() < limit {
+            self.items.push_back(item);
+            return Offer::Queued;
+        }
+        match policy {
+            OverflowPolicy::Block => Offer::Full(item),
+            // With zero capacity there is nothing to evict, so DropOldest
+            // discards too.
+            _ if policy == OverflowPolicy::DropNewest || limit == 0 => {
+                self.dropped += 1;
+                Offer::Discarded
+            }
+            _ => {
+                // Make room for the new item: normally one eviction, more if
+                // the buffer holds more than `limit`.
+                let excess = self.items.len() + 1 - limit;
+                self.items.drain(..excess);
+                self.dropped += excess as u64;
+                self.items.push_back(item);
+                Offer::Evicted
+            }
+        }
     }
 
     /// Removes and returns the oldest item.
@@ -104,6 +172,7 @@ impl ConnectionBuffer {
         self.capacity = capacity;
         let excess = self.items.len().saturating_sub(capacity);
         self.items.drain(..excess);
+        self.dropped += excess as u64;
         excess
     }
 
@@ -152,5 +221,36 @@ mod tests {
         assert_eq!(buffer.pop().unwrap().sequence, 2);
         assert_eq!(buffer.set_capacity(8), 0);
         assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer.dropped(), 2);
+    }
+
+    fn offer_five(policy: OverflowPolicy, capacity: usize) -> (Vec<u64>, u64) {
+        let mut buffer = ConnectionBuffer::with_capacity(capacity);
+        for i in 0..5 {
+            match buffer.offer(StreamItem::new(i, ()), policy) {
+                Offer::Full(item) => assert_eq!(item.sequence, i),
+                Offer::Queued | Offer::Evicted | Offer::Discarded => {}
+            }
+        }
+        let dropped = buffer.dropped();
+        let items = std::iter::from_fn(|| buffer.pop())
+            .map(|i| i.sequence)
+            .collect();
+        (items, dropped)
+    }
+
+    #[test]
+    fn offer_applies_policy() {
+        assert_eq!(offer_five(OverflowPolicy::Block, 3), (vec![0, 1, 2], 0));
+        assert_eq!(
+            offer_five(OverflowPolicy::DropOldest, 3),
+            (vec![2, 3, 4], 2)
+        );
+        assert_eq!(
+            offer_five(OverflowPolicy::DropNewest, 3),
+            (vec![0, 1, 2], 2)
+        );
+        assert_eq!(offer_five(OverflowPolicy::KeepLatest, 3), (vec![4], 4));
+        assert_eq!(offer_five(OverflowPolicy::DropOldest, 0), (vec![], 5));
     }
 }

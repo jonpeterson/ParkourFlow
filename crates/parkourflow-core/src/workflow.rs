@@ -103,6 +103,33 @@ impl Node {
     }
 }
 
+/// What a connection does when an item arrives and its buffer is full.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowPolicy {
+    /// The producer waits for space. Nothing is lost. Live sources, which
+    /// cannot wait, drop the incoming item instead.
+    #[default]
+    Block,
+    /// Evict the oldest queued item to make room.
+    DropOldest,
+    /// Discard the incoming item.
+    DropNewest,
+    /// Hold a single item; each new item replaces it.
+    KeepLatest,
+}
+
+impl OverflowPolicy {
+    /// The number of items a buffer holds under this policy:
+    /// 1 for [`KeepLatest`](Self::KeepLatest), otherwise `configured`.
+    pub fn effective_capacity(self, configured: usize) -> usize {
+        match self {
+            Self::KeepLatest => 1,
+            _ => configured,
+        }
+    }
+}
+
 /// A stream from one node's output port to another node's input port.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Connection {
@@ -113,6 +140,16 @@ pub struct Connection {
     pub to: PortRef,
     /// Maximum number of items buffered on this connection.
     pub buffer_capacity: usize,
+    pub overflow_policy: OverflowPolicy,
+}
+
+impl Connection {
+    /// The number of items the buffer actually holds: 1 for
+    /// [`OverflowPolicy::KeepLatest`], otherwise `buffer_capacity`.
+    pub fn effective_capacity(&self) -> usize {
+        self.overflow_policy
+            .effective_capacity(self.buffer_capacity)
+    }
 }
 
 /// A workflow's configuration.
@@ -312,7 +349,8 @@ impl Workflow {
         Ok(())
     }
 
-    /// Connects an output port to an input port.
+    /// Connects an output port to an input port with the default
+    /// [`OverflowPolicy::Block`].
     ///
     /// Fails unless both ports exist, their data types match, and the input
     /// isn't already connected. One output may feed many inputs.
@@ -358,9 +396,16 @@ impl Workflow {
                 from,
                 to,
                 buffer_capacity,
+                overflow_policy: OverflowPolicy::default(),
             },
         );
         Ok(id)
+    }
+
+    fn connection_mut(&mut self, id: ConnectionId) -> Result<&mut Connection, WorkflowError> {
+        self.connections
+            .get_mut(&id)
+            .ok_or(WorkflowError::ConnectionNotFound(id))
     }
 
     pub fn disconnect(&mut self, id: ConnectionId) -> Result<Connection, WorkflowError> {
@@ -377,10 +422,16 @@ impl Workflow {
         if capacity == 0 {
             return Err(WorkflowError::ZeroBufferCapacity);
         }
-        self.connections
-            .get_mut(&id)
-            .ok_or(WorkflowError::ConnectionNotFound(id))?
-            .buffer_capacity = capacity;
+        self.connection_mut(id)?.buffer_capacity = capacity;
+        Ok(())
+    }
+
+    pub fn set_overflow_policy(
+        &mut self,
+        id: ConnectionId,
+        policy: OverflowPolicy,
+    ) -> Result<(), WorkflowError> {
+        self.connection_mut(id)?.overflow_policy = policy;
         Ok(())
     }
 }
@@ -558,5 +609,34 @@ mod tests {
         assert_eq!(json["groups"]["0"]["nodes"][0], 2);
         assert_eq!(json["nodes"]["3"]["kind"], "processor");
         assert_eq!(json["connections"]["5"]["buffer_capacity"], 4);
+        assert_eq!(json["connections"]["5"]["overflow_policy"], "block");
+    }
+
+    #[test]
+    fn overflow_policy_and_effective_capacity() {
+        let (mut wf, _, [source, parser, _]) = dns_pipeline();
+        let id = wf
+            .connect(
+                PortRef::new(source, "packets"),
+                PortRef::new(parser, "packets"),
+                8,
+            )
+            .unwrap();
+        let conn = wf.connection(id).unwrap();
+        assert_eq!(conn.overflow_policy, OverflowPolicy::Block);
+        assert_eq!(conn.effective_capacity(), 8);
+
+        wf.set_overflow_policy(id, OverflowPolicy::KeepLatest)
+            .unwrap();
+        let conn = wf.connection(id).unwrap();
+        assert_eq!(conn.effective_capacity(), 1);
+        // The configured capacity is kept for when the policy changes back.
+        assert_eq!(conn.buffer_capacity, 8);
+
+        let missing = ConnectionId(999);
+        assert_eq!(
+            wf.set_overflow_policy(missing, OverflowPolicy::DropOldest),
+            Err(WorkflowError::ConnectionNotFound(missing))
+        );
     }
 }

@@ -4,14 +4,16 @@ Guidance for AI coding agents (and humans) working on ParkourFlow. Read [README.
 
 ## Project state
 
-Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state). The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, and the canvas edits that workflow through Tauri commands. There is no graph execution yet.
+Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state) and the edge transport (credit-based bounded channels with overflow policies). The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, and the canvas edits that workflow through Tauri commands. There is no graph execution yet.
 
-Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect`, `disconnect`, `set_buffer_capacity`.
+Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`.
 
 Decisions so far:
 - Edit commands go through `AppState::edit`, which applies the change to the `Workflow` and then calls `WorkflowState::reconcile`. Errors are returned to JS as strings (the `WorkflowError` message).
 - The UI does not validate connections itself. Every edit is sent to the runtime and the canvas redraws from `get_workflow`, so the runtime stays the source of truth.
 - Node positions are UI-only (not part of `Workflow`) until layout is added to the workflow format.
+- Edge transport lives in `parkourflow-core/src/transport.rs` (see README → "Flow control" → "Implementation"). It uses only `std` sync primitives so the core stays scheduler-neutral; Tokio is a dev-dependency there, used only by tests. Drop counters live in `ConnectionBuffer` (runtime state), never on `Connection`.
+- `OverflowPolicy` serializes as snake_case (`"block"`, `"drop_oldest"`, `"drop_newest"`, `"keep_latest"`).
 
 ## Layout
 
