@@ -1,4 +1,5 @@
 use crate::node::{DataType, NodeKind};
+use crate::state::NodeStatus;
 use crate::workflow::{ConnectionId, GroupId, NodeId, PortRef};
 
 /// Errors from editing a [`Workflow`](crate::Workflow).
@@ -35,6 +36,12 @@ pub enum WorkflowError {
     PropertyNotFound { node: NodeId, property: String },
     #[error("`{property}` {reason}")]
     InvalidPropertyValue { property: String, reason: String },
+    #[error("cannot {action} {node} while it is {status}")]
+    InvalidTransition {
+        node: NodeId,
+        status: NodeStatus,
+        action: &'static str,
+    },
     #[error("buffer capacity must be at least 1")]
     ZeroBufferCapacity,
 }

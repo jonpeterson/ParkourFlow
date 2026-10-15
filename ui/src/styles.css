@@ -96,11 +96,14 @@ body,
 .pf-port--out { text-align: right; }
 
 .pf-node__status {
-  padding: 3px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 4px 10px;
   border-top: 1px solid var(--pf-border);
   color: var(--pf-muted);
   font-size: 10px;
-  letter-spacing: 0.04em;
 }
 
 .pf-error {
@@ -165,8 +168,6 @@ body,
 
 .pf-node__missing {
   color: var(--pf-sink);
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .pf-inspector {
@@ -295,3 +296,60 @@ body,
   font-weight: normal;
   cursor: pointer;
 }
+
+.pf-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-control {
+  padding: 2px 8px;
+  border: 1px solid var(--pf-border);
+  border-radius: 4px;
+  background: var(--pf-bg);
+  color: var(--pf-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pf-control:hover:not(:disabled) { border-color: var(--pf-processor); }
+.pf-control:disabled { opacity: 0.5; cursor: default; }
+.pf-control--error { color: #c53030; border-color: #c53030; }
+.pf-control--primary { background: var(--pf-processor); border-color: var(--pf-processor); color: #fff; }
+
+.pf-badge--starting::after {
+  content: "…";
+}
+
+.pf-dialog {
+  max-width: 420px;
+  padding: 16px 18px;
+  border: 1px solid var(--pf-border);
+  border-radius: 8px;
+  background: var(--pf-panel);
+  color: var(--pf-text);
+}
+
+.pf-dialog::backdrop { background: rgb(0 0 0 / 0.4); }
+
+.pf-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.pf-dialog__message {
+  margin: 0 0 16px;
+  color: #c53030;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pf-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pf-dialog__actions .pf-control { font-size: 13px; padding: 4px 12px; }

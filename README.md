@@ -118,8 +118,37 @@ Connections (workflow level; may cross groups)
 - **Ports** have a name and a **data type** such as `Packet`, `Frame`, `Texture`, `Audio`, or `Record`. Node modules can define more data types.
 - **Connections** join a node's output port, which emits data, to another node's input port, which receives it. A connection is only allowed when both ports carry the same data type. One output can feed many inputs, but each input accepts only one connection.
 - **Buffers.** Each connection has a configurable `buffer_capacity` and `overflow_policy`. At runtime it gets an *edge*: a bounded FIFO of stream items. A full buffer never grows; the connection's overflow policy decides what happens next (see [Flow control](#flow-control)).
-- **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message.
+- **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message. See [Node lifecycle](#node-lifecycle).
 - **Stream items** carry a sequence number, an optional timestamp, and a payload. The payload is shared by reference (`Arc`), not copied.
+
+### Node lifecycle
+
+Nodes are started and stopped individually.
+
+| From | Action | To |
+| --- | --- | --- |
+| `STOPPED` | start | `STARTING` |
+| `STARTING` | startup succeeds | `RUNNING` |
+| `STARTING` | startup fails | `ERROR` (with a message) |
+| `RUNNING` | stop | `STOPPED` |
+| `ERROR` | start (retry) | `STARTING` |
+
+Any other request, such as stopping a node that is `STARTING`, is rejected. The transition rules live in `WorkflowState` (`begin_start`, `finish_start`, `stop`).
+
+**Startup** runs off the command thread, so `start_node` returns as soon as the node is `STARTING`. Startup currently means passing `preflight`: required properties are set, files to read exist, and folders to write into exist. No node type processes data yet, so a `RUNNING` node is not doing any work. Device properties are not checked yet.
+
+**Status changes are pushed, not polled.** The runtime emits a `node-status` event (`{ id, state }`) on every transition, and the UI updates the node from it.
+
+**In the UI**, each node card and the inspector show the status and the actions it allows:
+
+| Status | Controls |
+| --- | --- |
+| `STOPPED` | **Start** |
+| `STARTING` | None |
+| `RUNNING` | **Stop** |
+| `ERROR` | **Details** (opens a dialog with the error message) and **Retry**. Hovering the status shows the message too. |
+
+A button disables as soon as it is clicked and stays disabled until the runtime answers, so a double click sends only one request.
 
 ### Flow control
 
@@ -309,6 +338,7 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/transport.rs        credit-based edge transport and overflow policies
   src/catalog.rs          node type descriptors
   src/property.rs         typed node properties: schema, values, validation
+  src/lifecycle.rs        startup checks (preflight) for starting a node
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)
@@ -316,6 +346,7 @@ ui/                       React + TypeScript frontend (Vite root)
   src/App.tsx             canvas + node palette; edits call the runtime, then redraw
   src/MetadataNode.tsx    generic node renderer driven by node metadata
   src/Inspector.tsx       generic property form for the selected node
+  src/NodeControls.tsx    start/stop controls and the error dialog
 ```
 
 ## Contributing

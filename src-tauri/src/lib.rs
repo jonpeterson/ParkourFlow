@@ -2,10 +2,20 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use parkourflow_core::{
-    ConnectionId, DeviceOption, EdgeStats, GroupId, NodeDescriptor, NodeId, NodeState,
+    ConnectionId, DeviceOption, EdgeStats, GroupId, Node, NodeDescriptor, NodeId, NodeState,
     OverflowPolicy, PortRef, PropertyValue, Workflow, WorkflowError, WorkflowState,
 };
-use tauri::State;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Event sent to the UI whenever a node's status changes.
+const NODE_STATUS_EVENT: &str = "node-status";
+
+#[derive(Debug, Clone, Serialize)]
+struct NodeStatusEvent {
+    id: NodeId,
+    state: NodeState,
+}
 
 /// The open workflow and its runtime state. There is one concurrent user, so
 /// a single lock around both is enough.
@@ -37,6 +47,39 @@ impl AppState {
         let result = f(workflow).map_err(|e| e.to_string())?;
         state.reconcile(workflow);
         Ok(result)
+    }
+
+    /// Moves a node to `STARTING`. Returns a copy of its configuration for
+    /// the startup work, which runs without holding the lock.
+    fn begin_start(&self, id: NodeId) -> Result<(Node, NodeStatusEvent), String> {
+        let mut session = self.0.lock().map_err(|e| e.to_string())?;
+        let Session { workflow, state } = &mut *session;
+        let node = workflow
+            .node(id)
+            .ok_or_else(|| WorkflowError::NodeNotFound(id).to_string())?
+            .clone();
+        let state = state.begin_start(id).map_err(|e| e.to_string())?.clone();
+        Ok((node, NodeStatusEvent { id, state }))
+    }
+
+    /// Records the outcome of a start. `None` if the node was removed or
+    /// stopped being `STARTING` in the meantime.
+    fn finish_start(&self, id: NodeId, result: Result<(), String>) -> Option<NodeStatusEvent> {
+        let mut session = self.0.lock().ok()?;
+        let state = session.state.finish_start(id, result)?.clone();
+        Some(NodeStatusEvent { id, state })
+    }
+
+    fn stop(&self, id: NodeId) -> Result<NodeStatusEvent, String> {
+        let mut session = self.0.lock().map_err(|e| e.to_string())?;
+        let state = session.state.stop(id).map_err(|e| e.to_string())?.clone();
+        Ok(NodeStatusEvent { id, state })
+    }
+}
+
+fn emit_status(app: &AppHandle, event: NodeStatusEvent) {
+    if let Err(e) = app.emit(NODE_STATUS_EVENT, event) {
+        eprintln!("failed to emit {NODE_STATUS_EVENT}: {e}");
     }
 }
 
@@ -154,6 +197,33 @@ fn set_overflow_policy(
     app.edit(|wf| wf.set_overflow_policy(id, policy))
 }
 
+/// Starts a `STOPPED` or `ERROR` node. Returns once the node is `STARTING`;
+/// the outcome (`RUNNING` or `ERROR`) arrives as a `node-status` event.
+#[tauri::command]
+fn start_node(app: AppHandle, id: NodeId) -> Result<(), String> {
+    let (node, event) = app.state::<AppState>().begin_start(id)?;
+    emit_status(&app, event);
+
+    // Startup touches the filesystem (and later devices), so keep it off the
+    // command thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = parkourflow_core::preflight(&node);
+        if let Some(event) = app.state::<AppState>().finish_start(id, result) {
+            emit_status(&app, event);
+        }
+    });
+    Ok(())
+}
+
+/// Stops a `RUNNING` node. The new status also arrives as a `node-status`
+/// event.
+#[tauri::command]
+fn stop_node(app: AppHandle, id: NodeId) -> Result<(), String> {
+    let event = app.state::<AppState>().stop(id)?;
+    emit_status(&app, event);
+    Ok(())
+}
+
 /// Sets a node property. `value: null` resets it to its default, or clears
 /// it if it has none.
 #[tauri::command]
@@ -194,6 +264,8 @@ pub fn run() {
             set_overflow_policy,
             set_property,
             list_device_options,
+            start_node,
+            stop_node,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ParkourFlow");
@@ -252,6 +324,49 @@ mod tests {
             .edit(|wf| wf.set_property(id, "snaplen", Some(1.into())))
             .unwrap_err();
         assert_eq!(err, "`snaplen` must be between 64 and 262144");
+    }
+
+    #[test]
+    fn start_and_stop() {
+        use parkourflow_core::NodeStatus;
+
+        let app = AppState::new(Workflow::new("test"));
+        let csv = parkourflow_core::builtin_nodes()
+            .into_iter()
+            .find(|d| d.type_id == "file.csv_writer")
+            .unwrap();
+        let id = app
+            .edit(|wf| wf.add_node(wf.root(), "Write", &csv))
+            .unwrap();
+
+        // Missing `path`: the start fails with a message.
+        let (node, event) = app.begin_start(id).unwrap();
+        assert_eq!(event.state.status, NodeStatus::Starting);
+        assert!(app
+            .begin_start(id)
+            .unwrap_err()
+            .ends_with("while it is STARTING"));
+        let event = app
+            .finish_start(id, parkourflow_core::preflight(&node))
+            .unwrap();
+        assert_eq!(event.state.status, NodeStatus::Error);
+        assert_eq!(
+            event.state.error.as_deref(),
+            Some("Set path before starting.")
+        );
+
+        // Retry with a valid path.
+        let path = std::env::temp_dir().join("parkourflow-app-test.csv");
+        app.edit(|wf| wf.set_property(id, "path", Some(path.to_str().unwrap().into())))
+            .unwrap();
+        let (node, _) = app.begin_start(id).unwrap();
+        let event = app
+            .finish_start(id, parkourflow_core::preflight(&node))
+            .unwrap();
+        assert_eq!(event.state.status, NodeStatus::Running);
+
+        assert_eq!(app.stop(id).unwrap().state.status, NodeStatus::Stopped);
+        assert!(app.stop(id).is_err());
     }
 
     #[test]

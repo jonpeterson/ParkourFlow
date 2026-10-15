@@ -1,6 +1,7 @@
 // Typed wrappers around the runtime's Tauri commands (control plane only).
 // Types mirror the Rust `Serialize` output in `parkourflow-core`.
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type NodeKind = "source" | "processor" | "sink";
 
@@ -159,3 +160,17 @@ export const setProperty = (id: NodeId, name: string, value: PropertyValue | nul
 /** Lists the devices currently available for a device property's class. */
 export const listDeviceOptions = (deviceClass: string) =>
   invoke<DeviceOption[]>("list_device_options", { class: deviceClass });
+
+/** Starts a STOPPED or ERROR node. Resolves once it is STARTING; the outcome arrives via `onNodeStatus`. */
+export const startNode = (id: NodeId) => invoke<void>("start_node", { id });
+/** Stops a RUNNING node. */
+export const stopNode = (id: NodeId) => invoke<void>("stop_node", { id });
+
+export interface NodeStatusEvent {
+  id: NodeId;
+  state: NodeState;
+}
+
+/** Calls `handler` whenever a node's status changes. Resolves to an unsubscribe function. */
+export const onNodeStatus = (handler: (event: NodeStatusEvent) => void): Promise<UnlistenFn> =>
+  listen<NodeStatusEvent>("node-status", (e) => handler(e.payload));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import {
   Background,
@@ -13,8 +13,9 @@ import {
 } from "@xyflow/react";
 import { Inspector } from "./Inspector";
 import { MetadataNode, type MetadataNodeType } from "./MetadataNode";
+import { ErrorDialog, NodeActionsContext, type NodeActions } from "./NodeControls";
 import * as runtime from "./runtime";
-import type { NodeDescriptor, NodeState, Workflow } from "./runtime";
+import type { NodeDescriptor, NodeId, NodeState, Workflow } from "./runtime";
 
 const nodeTypes = { metadata: MetadataNode };
 
@@ -66,6 +67,8 @@ export default function App() {
   const [unavailable, setUnavailable] = useState<string>();
   const [error, setError] = useState<string>();
   const descriptorsRef = useRef<NodeDescriptor[]>([]);
+  const [pending, setPending] = useState<ReadonlySet<NodeId>>(new Set());
+  const [errorNode, setErrorNode] = useState<NodeId>();
 
   // Re-read the workflow and node status from the runtime and redraw.
   const refresh = useCallback(async () => {
@@ -102,6 +105,52 @@ export default function App() {
       })
       .catch((e) => setUnavailable(String(e)));
   }, [refresh]);
+
+  // Apply status changes pushed by the runtime.
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisten = runtime.onNodeStatus(({ id, state }) =>
+      setNodes((prev) =>
+        prev.map((n) => (n.id === String(id) ? { ...n, data: { ...n.data, state } } : n)),
+      ),
+    );
+    return () => void unlisten.then((stop) => stop());
+  }, [setNodes]);
+
+  // Start/stop: disable the node's buttons until the runtime answers. The
+  // new status itself arrives through `onNodeStatus`.
+  // `inFlight` guards synchronously, before React re-renders the disabled
+  // button, so a fast double click sends only one request.
+  const inFlight = useRef(new Set<NodeId>());
+  const nodeActions: NodeActions = useMemo(() => {
+    const request = async (id: NodeId, op: (id: NodeId) => Promise<void>) => {
+      if (inFlight.current.has(id)) return;
+      inFlight.current.add(id);
+      setPending((p) => new Set(p).add(id));
+      try {
+        await op(id);
+        setError(undefined);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        inFlight.current.delete(id);
+        setPending((p) => {
+          const next = new Set(p);
+          next.delete(id);
+          return next;
+        });
+      }
+    };
+    return {
+      pending,
+      start: (id) => void request(id, runtime.startNode),
+      stop: (id) => void request(id, runtime.stopNode),
+      showError: setErrorNode,
+    };
+  }, [pending]);
+
+  const errorNodeData = nodes.find((n) => n.id === String(errorNode))?.data;
+  const closeErrorDialog = useCallback(() => setErrorNode(undefined), []);
 
   const selected = nodes.filter((n) => n.selected);
   const inspected = selected.length === 1 ? selected[0].data : undefined;
@@ -141,6 +190,7 @@ export default function App() {
   );
 
   return (
+    <NodeActionsContext.Provider value={nodeActions}>
     <div className="pf-app">
       <header className="pf-toolbar">
         <strong>ParkourFlow</strong>
@@ -188,6 +238,15 @@ export default function App() {
         </main>
         <Inspector node={inspected?.node} state={inspected?.state} onChanged={redraw} />
       </div>
+      {errorNodeData && (
+        <ErrorDialog
+          id={errorNodeData.node.id}
+          name={errorNodeData.node.name}
+          state={errorNodeData.state}
+          onClose={closeErrorDialog}
+        />
+      )}
     </div>
+    </NodeActionsContext.Provider>
   );
 }

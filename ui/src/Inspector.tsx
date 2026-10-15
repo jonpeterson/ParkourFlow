@@ -1,6 +1,7 @@
 // Generic inspector: renders a form for any node from its property schema.
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { NodeControls } from "./NodeControls";
 import * as runtime from "./runtime";
 import type { DeviceOption, NodeState, Property, PropertyValue, WorkflowNode } from "./runtime";
 
@@ -28,9 +29,9 @@ export function Inspector({ node, state, onChanged }: InspectorProps) {
       <header className="pf-inspector__header">
         <h2>{node.name}</h2>
         <span className="pf-node__category">{node.type_id}</span>
-        {state && <span className={`pf-badge pf-badge--${state.status.toLowerCase()}`}>{state.status}</span>}
+        <NodeControls id={node.id} state={state} />
         {state?.error && <p className="pf-field__error">{state.error}</p>}
-        {missing.length > 0 && <p className="pf-inspector__missing">Set {missing.join(", ")} before starting.</p>}
+        {missing.length > 0 && !state?.error && <p className="pf-inspector__missing">Set {missing.join(", ")} before starting.</p>}
       </header>
       {node.properties.length === 0 && <p className="pf-inspector__empty">This node has no properties.</p>}
       {node.properties.map((p) => (

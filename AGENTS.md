@@ -6,7 +6,7 @@ Guidance for AI coding agents (and humans) working on ParkourFlow. Read [README.
 
 Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state) and the edge transport (credit-based bounded channels with overflow policies). The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, and the canvas edits that workflow through Tauri commands. There is no graph execution yet.
 
-Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`, `set_property`, `list_device_options`.
+Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`, `set_property`, `list_device_options`, `start_node`, `stop_node`. Events (runtime → UI): `node-status` (`{ id, state }`), emitted on every node status change.
 
 Decisions so far:
 - Edit commands go through `AppState::edit`, which applies the change to the `Workflow` and then calls `WorkflowState::reconcile`. Errors are returned to JS as strings (the `WorkflowError` message).
@@ -37,7 +37,8 @@ Do not break these rules without an explicit design decision from the maintainer
 6. **Don't force one scheduler.** Tokio is for I/O and control-plane work. Do not assume every high-throughput stream runs as an async task. DSP (fixed sample blocks) and GPU/video (resource-aware, explicitly synchronized) may need their own execution domains.
 7. **Streams carry metadata.** Keep timestamps, sequence numbers, formats, dimensions, sample rates, and capture metadata with the payload. Do not drop them in transit.
 8. **Configuration and runtime state stay separate.** `Workflow` (groups, nodes, ports, connections, buffer sizes) holds no runtime data. `WorkflowState` (node status, buffer contents) is keyed by workflow ids and synced with `WorkflowState::reconcile`. Don't put status, buffers, or other runtime data on config types.
-9. **The runtime owns the lifecycle.** Graph construction, validation, startup, shutdown, cancellation, node failure handling, and config propagation live in Rust, not the UI.
+9. **Status changes are pushed.** Node status transitions go through `WorkflowState::begin_start` / `finish_start` / `stop`, which enforce the allowed transitions, and every transition is emitted as a `node-status` event. The UI updates from events; don't add polling for status. Long startup work runs off the command thread and must not hold the session lock.
+10. **The runtime owns the lifecycle.** Graph construction, validation, startup, shutdown, cancellation, node failure handling, and config propagation live in Rust, not the UI.
 
 ## Node conventions
 

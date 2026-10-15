@@ -17,6 +17,7 @@
 pub mod buffer;
 pub mod catalog;
 pub mod error;
+pub mod lifecycle;
 pub mod node;
 pub mod property;
 pub mod state;
@@ -26,6 +27,7 @@ pub mod workflow;
 pub use buffer::{ConnectionBuffer, Offer, Payload, StreamItem};
 pub use catalog::{builtin_nodes, NodeDescriptor};
 pub use error::WorkflowError;
+pub use lifecycle::preflight;
 pub use node::{DataType, NodeKind, Port};
 pub use property::{
     device_options, Apply, DeviceOption, FileMode, Property, PropertyType, PropertyValue,
