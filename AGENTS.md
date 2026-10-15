@@ -4,9 +4,9 @@ Guidance for AI coding agents (and humans) working on ParkourFlow. Read [README.
 
 ## Project state
 
-Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state) and the edge transport (credit-based bounded channels with overflow policies). The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, and the canvas edits that workflow through Tauri commands. There is no graph execution yet.
+Early scaffold. The core crate has the in-memory workflow model (configuration plus runtime state), the edge transport (credit-based bounded channels with overflow policies), and the node execution API (`runner.rs`). `parkourflow-files` holds the first runnable nodes: CSV Source and CSV Writer. The Tauri shell holds one `Workflow` and its `WorkflowState` in managed state, the canvas edits that workflow through Tauri commands, and nodes are started and stopped one at a time. There is no whole-graph start yet.
 
-Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`, `set_property`, `list_device_options`, `start_node`, `stop_node`. Events (runtime → UI): `node-status` (`{ id, state }`), emitted on every node status change.
+Current control-plane commands (`src-tauri/src/lib.rs`, wrapped in `ui/src/runtime.ts`): `list_node_types`, `runtime_version`, `get_workflow`, `node_statuses`, `connection_stats`, `add_node`, `remove_node`, `move_node`, `add_group`, `remove_group`, `connect` (optional `buffer_capacity` and `overflow_policy`), `disconnect`, `set_buffer_capacity`, `set_overflow_policy`, `set_property`, `list_device_options`, `start_node`, `stop_node`. Events (runtime → UI): `node-status` (`{ id, state }`), emitted on every node status change; `connection-stats` (every connection's `EdgeStats`, keyed by id), emitted when any of them changed since the last 250 ms sample.
 
 Decisions so far:
 - Edit commands go through `AppState::edit`, which applies the change to the `Workflow` and then calls `WorkflowState::reconcile`. Errors are returned to JS as strings (the `WorkflowError` message).
@@ -14,6 +14,10 @@ Decisions so far:
 - Node positions are UI-only (not part of `Workflow`) until layout is added to the workflow format.
 - Edge transport lives in `parkourflow-core/src/transport.rs` (see README → "Flow control" → "Implementation"). It uses only `std` sync primitives so the core stays scheduler-neutral; Tokio is a dev-dependency there, used only by tests. Drop counters live in `ConnectionBuffer` (runtime state), never on `Connection`.
 - `OverflowPolicy` serializes as snake_case (`"block"`, `"drop_oldest"`, `"drop_newest"`, `"keep_latest"`).
+- Node execution (README → "Node execution"): a node type that can run registers a `BuildRunner` in a `NodeRegistry`; the shell builds the registry in `registry()` (`src-tauri/src/lib.rs`). Each running node gets its own OS thread. `NodeRunner::run` receives a `NodeContext` of `Input`s and `Output`s that wait like `recv_blocking`/`send_blocking` but return once the node is cancelled, so runners never need their own cancel plumbing around edge waits. A runner declares `Pacing::Live` or `Pausable` (default) via `NodeRunner::pacing`, asked once after it is built.
+- When a runner returns, its edges close: downstream drains and ends, upstream sends fail. Stopping a source therefore ends the pipeline below it, and a file pipeline stops on its own when the file is done. A restarted node reopens its idle edges (`Edge::attach_sender` / `attach_receiver`).
+- `Record` (`parkourflow-core/src/record.rs`) is the payload of `Record` streams: shared `columns: Arc<[String]>` plus per-row `values`. The DNS Parser emits `Record`s, so CSV Writer takes `Record` input.
+- CSV parsing is hand-written in `parkourflow-files/src/format.rs` (RFC 4180, `RowReader`/`RowWriter`) to avoid a dependency for now; the CSV nodes only use that interface, so a CSV crate can replace it in one file.
 
 ## Layout
 
@@ -37,7 +41,7 @@ Do not break these rules without an explicit design decision from the maintainer
 6. **Don't force one scheduler.** Tokio is for I/O and control-plane work. Do not assume every high-throughput stream runs as an async task. DSP (fixed sample blocks) and GPU/video (resource-aware, explicitly synchronized) may need their own execution domains.
 7. **Streams carry metadata.** Keep timestamps, sequence numbers, formats, dimensions, sample rates, and capture metadata with the payload. Do not drop them in transit.
 8. **Configuration and runtime state stay separate.** `Workflow` (groups, nodes, ports, connections, buffer sizes) holds no runtime data. `WorkflowState` (node status, buffer contents) is keyed by workflow ids and synced with `WorkflowState::reconcile`. Don't put status, buffers, or other runtime data on config types.
-9. **Status changes are pushed.** Node status transitions go through `WorkflowState::begin_start` / `finish_start` / `stop`, which enforce the allowed transitions, and every transition is emitted as a `node-status` event. The UI updates from events; don't add polling for status. Long startup work runs off the command thread and must not hold the session lock.
+9. **Status changes are pushed.** Node status transitions go through `WorkflowState::begin_start` / `finish_start` / `begin_stop` / `finish_run`, which enforce the allowed transitions, and every transition is emitted as a `node-status` event. The UI updates from events; don't add polling for status. Startup work and runners run off the command thread and must not hold the session lock.
 10. **The runtime owns the lifecycle.** Graph construction, validation, startup, shutdown, cancellation, node failure handling, and config propagation live in Rust, not the UI.
 
 ## Node conventions
@@ -50,6 +54,7 @@ Do not break these rules without an explicit design decision from the maintainer
 - A new property type needs: a `PropertyType` variant, validation in `Property::validate`, a TS type in `ui/src/runtime.ts`, and a widget in `ui/src/Inspector.tsx`.
 - The file picker uses the official `tauri-plugin-dialog` (`dialog:default` permission).
 - Keep a node's processing code independent of the editor. A node must be runnable and testable without the UI.
+- **A runnable node** implements `NodeRunner` (`crates/parkourflow-core/src/runner.rs`) and registers a builder with `NodeRegistry::register(type_id, build)` from its module crate's `register` function. The builder reads `Node::config::<T>()` and opens files or devices, so failures surface as start errors. `run` must return soon after cancellation: block only on `Input::recv`/`Output::send`, or check `NodeContext::is_cancelled` in other loops. Return `Ok` when the inputs end or `Output::send` fails (nobody is listening, or the node is stopping); return `Err` for real failures. Panics are caught and reported as `ERROR`.
 - Node modules are **statically linked** crates grouped by domain (media, networking, audio, GPU, files, structured data). Do not build a dynamic plugin system until the node API is stable.
 
 ## Tech choices

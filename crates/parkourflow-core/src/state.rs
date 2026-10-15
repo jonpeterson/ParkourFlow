@@ -10,6 +10,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WorkflowError;
+use crate::runner::{CancelToken, Wiring};
 use crate::transport::{Edge, EdgeStats};
 use crate::workflow::{ConnectionId, NodeId, Workflow};
 
@@ -17,7 +18,9 @@ use crate::workflow::{ConnectionId, NodeId, Workflow};
 ///
 /// - start: `STOPPED` or `ERROR` → `STARTING`
 /// - startup succeeds: `STARTING` → `RUNNING`; startup fails: `STARTING` → `ERROR`
-/// - stop: `RUNNING` → `STOPPED`
+/// - stop: `RUNNING` → `STOPPING`
+/// - the runner returns: `RUNNING` or `STOPPING` → `STOPPED`, or `ERROR` if
+///   it failed
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NodeStatus {
@@ -25,6 +28,7 @@ pub enum NodeStatus {
     Stopped,
     Starting,
     Running,
+    Stopping,
     Error,
 }
 
@@ -34,6 +38,7 @@ impl fmt::Display for NodeStatus {
             NodeStatus::Stopped => "STOPPED",
             NodeStatus::Starting => "STARTING",
             NodeStatus::Running => "RUNNING",
+            NodeStatus::Stopping => "STOPPING",
             NodeStatus::Error => "ERROR",
         })
     }
@@ -64,11 +69,12 @@ impl NodeState {
 /// Runtime state for every node and connection in a workflow.
 ///
 /// Each connection has an [`Edge`]: its buffer, overflow policy, and drop
-/// counter.
+/// counter. Each running node has a [`CancelToken`] that stops it.
 #[derive(Debug, Default)]
 pub struct WorkflowState {
     nodes: HashMap<NodeId, NodeState>,
     edges: HashMap<ConnectionId, Edge>,
+    runs: HashMap<NodeId, CancelToken>,
 }
 
 impl WorkflowState {
@@ -82,12 +88,19 @@ impl WorkflowState {
     /// Brings the state in line with `workflow`:
     ///
     /// - removes state for nodes and connections that no longer exist,
-    ///   closing their edges,
+    ///   closing their edges and cancelling removed nodes that are running,
     /// - adds stopped nodes and empty edges for new ones, and
     /// - applies changed buffer capacities and overflow policies, dropping
     ///   (and counting) the oldest items if a buffer shrank.
     pub fn reconcile(&mut self, workflow: &Workflow) {
         self.nodes.retain(|id, _| workflow.node(*id).is_some());
+        self.runs.retain(|id, cancel| {
+            let keep = workflow.node(*id).is_some();
+            if !keep {
+                cancel.cancel();
+            }
+            keep
+        });
         self.edges.retain(|id, edge| {
             let keep = workflow.connection(*id).is_some();
             if !keep {
@@ -149,26 +162,45 @@ impl WorkflowState {
     /// Completes a start begun with [`begin_start`](Self::begin_start):
     /// `STARTING` → `RUNNING`, or `ERROR` with the failure message.
     ///
+    /// On success, `cancel` is kept to stop the node later; the caller then
+    /// runs the node and reports its end with
+    /// [`finish_run`](Self::finish_run).
+    ///
     /// Returns `None` if the node was removed or is no longer `STARTING`, in
-    /// which case nothing changes.
-    pub fn finish_start(&mut self, id: NodeId, result: Result<(), String>) -> Option<&NodeState> {
+    /// which case nothing changes and the caller must not run the node.
+    pub fn finish_start(
+        &mut self,
+        id: NodeId,
+        result: Result<CancelToken, String>,
+    ) -> Option<&NodeState> {
         let node = self.nodes.get_mut(&id)?;
         if node.status != NodeStatus::Starting {
             return None;
         }
         match result {
-            Ok(()) => node.set_status(NodeStatus::Running),
+            Ok(cancel) => {
+                node.set_status(NodeStatus::Running);
+                self.runs.insert(id, cancel);
+            }
             Err(message) => node.fail(message),
         }
         Some(node)
     }
 
-    /// Stops a running node: `RUNNING` → `STOPPED`.
-    pub fn stop(&mut self, id: NodeId) -> Result<&NodeState, WorkflowError> {
-        let node = self.node_for(id)?;
+    /// Stops a running node: `RUNNING` → `STOPPING`, and cancels its runner.
+    /// The node becomes `STOPPED` once the runner has returned (see
+    /// [`finish_run`](Self::finish_run)).
+    pub fn begin_stop(&mut self, id: NodeId) -> Result<&NodeState, WorkflowError> {
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or(WorkflowError::NodeNotFound(id))?;
         match node.status {
             NodeStatus::Running => {
-                node.set_status(NodeStatus::Stopped);
+                node.set_status(NodeStatus::Stopping);
+                if let Some(cancel) = self.runs.get(&id) {
+                    cancel.cancel();
+                }
                 Ok(node)
             }
             status => Err(WorkflowError::InvalidTransition {
@@ -177,6 +209,55 @@ impl WorkflowState {
                 action: "stop",
             }),
         }
+    }
+
+    /// Records that a node's runner has returned, on its own or after
+    /// [`begin_stop`](Self::begin_stop): `RUNNING` or `STOPPING` →
+    /// `STOPPED`, or `ERROR` with the runner's message.
+    ///
+    /// Returns `None` if the node was removed or is not running.
+    pub fn finish_run(&mut self, id: NodeId, result: Result<(), String>) -> Option<&NodeState> {
+        let node = self.nodes.get_mut(&id)?;
+        if !matches!(node.status, NodeStatus::Running | NodeStatus::Stopping) {
+            return None;
+        }
+        self.runs.remove(&id);
+        match result {
+            Ok(()) => node.set_status(NodeStatus::Stopped),
+            Err(message) => node.fail(message),
+        }
+        Some(node)
+    }
+
+    /// The edges each of a node's ports is connected to, for starting it.
+    pub fn wiring(&self, workflow: &Workflow, id: NodeId) -> Result<Wiring, WorkflowError> {
+        let node = workflow.node(id).ok_or(WorkflowError::NodeNotFound(id))?;
+        let edge = |conn: ConnectionId| self.edges.get(&conn).cloned();
+        let connections: Vec<_> = workflow.connections_of(id).collect();
+        let inputs = node
+            .inputs
+            .iter()
+            .map(|port| {
+                let edge = connections
+                    .iter()
+                    .find(|c| c.to.node == id && c.to.port == port.name)
+                    .and_then(|c| edge(c.id));
+                (port.name.clone(), edge)
+            })
+            .collect();
+        let outputs = node
+            .outputs
+            .iter()
+            .map(|port| {
+                let edges = connections
+                    .iter()
+                    .filter(|c| c.from.node == id && c.from.port == port.name)
+                    .filter_map(|c| edge(c.id))
+                    .collect();
+                (port.name.clone(), edges)
+            })
+            .collect();
+        Ok(Wiring { inputs, outputs })
     }
 
     pub fn edge(&self, id: ConnectionId) -> Option<&Edge> {
@@ -285,6 +366,10 @@ mod tests {
         assert!(tx.try_send(StreamItem::new(9, ())).is_err());
     }
 
+    fn ok() -> Result<CancelToken, String> {
+        Ok(CancelToken::new())
+    }
+
     #[test]
     fn start_and_stop_transitions() {
         let (wf, source, ..) = two_nodes();
@@ -296,7 +381,7 @@ mod tests {
         };
 
         assert_eq!(
-            state.stop(source),
+            state.begin_stop(source),
             Err(invalid(NodeStatus::Stopped, "stop"))
         );
         assert_eq!(
@@ -308,17 +393,82 @@ mod tests {
             Err(invalid(NodeStatus::Starting, "start"))
         );
         assert_eq!(
-            state.stop(source),
+            state.begin_stop(source),
             Err(invalid(NodeStatus::Starting, "stop"))
         );
+        assert!(state.finish_run(source, Ok(())).is_none());
 
-        let node = state.finish_start(source, Ok(())).unwrap();
+        let cancel = CancelToken::new();
+        let node = state.finish_start(source, Ok(cancel.clone())).unwrap();
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(
             state.begin_start(source),
             Err(invalid(NodeStatus::Running, "start"))
         );
-        assert_eq!(state.stop(source).unwrap().status, NodeStatus::Stopped);
+
+        // Stopping cancels the runner; the node is STOPPED once it returns.
+        let node = state.begin_stop(source).unwrap();
+        assert_eq!(node.status, NodeStatus::Stopping);
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            state.begin_stop(source),
+            Err(invalid(NodeStatus::Stopping, "stop"))
+        );
+        let node = state.finish_run(source, Ok(())).unwrap();
+        assert_eq!(node.status, NodeStatus::Stopped);
+        assert!(state.finish_run(source, Ok(())).is_none());
+    }
+
+    #[test]
+    fn runner_end_and_failure() {
+        let (wf, source, ..) = two_nodes();
+        let mut state = WorkflowState::new(&wf);
+
+        // A runner that returns on its own stops the node.
+        state.begin_start(source).unwrap();
+        state.finish_start(source, ok()).unwrap();
+        let node = state.finish_run(source, Ok(())).unwrap();
+        assert_eq!(node.status, NodeStatus::Stopped);
+
+        // A failing runner puts it in ERROR, which can be retried.
+        state.begin_start(source).unwrap();
+        state.finish_start(source, ok()).unwrap();
+        let node = state.finish_run(source, Err("disk full".into())).unwrap();
+        assert_eq!(node.status, NodeStatus::Error);
+        assert_eq!(node.error.as_deref(), Some("disk full"));
+        assert_eq!(
+            state.begin_start(source).unwrap().status,
+            NodeStatus::Starting
+        );
+    }
+
+    #[test]
+    fn removing_a_running_node_cancels_it() {
+        let (mut wf, source, ..) = two_nodes();
+        let mut state = WorkflowState::new(&wf);
+        let cancel = CancelToken::new();
+        state.begin_start(source).unwrap();
+        state.finish_start(source, Ok(cancel.clone())).unwrap();
+        wf.remove_node(source).unwrap();
+        state.reconcile(&wf);
+        assert!(cancel.is_cancelled());
+        assert!(state.finish_run(source, Ok(())).is_none());
+    }
+
+    #[test]
+    fn wiring_lists_each_ports_edges() {
+        let (wf, source, parser, conn) = two_nodes();
+        let state = WorkflowState::new(&wf);
+        let wiring = state.wiring(&wf, source).unwrap();
+        assert!(wiring.inputs.is_empty());
+        assert_eq!(wiring.outputs.len(), 1);
+        assert_eq!(wiring.outputs[0].0, "packets");
+        assert_eq!(wiring.outputs[0].1.len(), 1);
+
+        let wiring = state.wiring(&wf, parser).unwrap();
+        let input = wiring.inputs[0].1.as_ref().unwrap();
+        assert_eq!(input.stats(), state.edge(conn).unwrap().stats());
+        assert!(wiring.outputs[0].1.is_empty());
     }
 
     #[test]
@@ -341,13 +491,13 @@ mod tests {
     fn finish_start_ignores_nodes_no_longer_starting() {
         let (mut wf, source, ..) = two_nodes();
         let mut state = WorkflowState::new(&wf);
-        assert!(state.finish_start(source, Ok(())).is_none());
+        assert!(state.finish_start(source, ok()).is_none());
         assert_eq!(state.node(source).unwrap().status, NodeStatus::Stopped);
 
         state.begin_start(source).unwrap();
         wf.remove_node(source).unwrap();
         state.reconcile(&wf);
-        assert!(state.finish_start(source, Ok(())).is_none());
+        assert!(state.finish_start(source, ok()).is_none());
         assert_eq!(
             state.begin_start(source),
             Err(WorkflowError::NodeNotFound(source))

@@ -2144,6 +2144,7 @@ name = "parkourflow-app"
 version = "0.1.0"
 dependencies = [
  "parkourflow-core",
+ "parkourflow-files",
  "serde",
  "serde_json",
  "tauri",
@@ -2159,6 +2160,14 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "parkourflow-files"
+version = "0.1.0"
+dependencies = [
+ "parkourflow-core",
+ "serde",
 ]
 
 [[package]]

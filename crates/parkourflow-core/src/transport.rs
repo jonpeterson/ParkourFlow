@@ -241,6 +241,49 @@ impl Edge {
         }
     }
 
+    /// Producer handle for a node that is starting a run. If the edge is
+    /// closed and no node holds a handle to it, it is reopened first, so the
+    /// restarted node begins a new stream. Items left from the previous
+    /// stream stay queued.
+    pub fn attach_sender(&self) -> Sender {
+        let mut inner = self.shared.lock();
+        if inner.closed && inner.senders == 0 && inner.receivers == 0 {
+            inner.closed = false;
+        }
+        inner.senders += 1;
+        Sender {
+            shared: self.shared.clone(),
+        }
+    }
+
+    /// Consumer handle for a node that is starting a run. A closed edge is
+    /// reopened only if no node holds a handle and nothing is queued;
+    /// otherwise the consumer gets what is left of the ended stream, then
+    /// its end.
+    pub fn attach_receiver(&self) -> Receiver {
+        let mut inner = self.shared.lock();
+        if inner.closed && inner.senders == 0 && inner.receivers == 0 && inner.buffer.is_empty() {
+            inner.closed = false;
+        }
+        inner.receivers += 1;
+        Receiver {
+            shared: self.shared.clone(),
+        }
+    }
+
+    /// Wakes every producer and consumer waiting on this edge without
+    /// changing it, so they re-check their `stop` condition (see
+    /// [`Receiver::recv_blocking_until`]).
+    pub fn wake(&self) {
+        let mut inner = self.shared.lock();
+        wake_all(&mut inner.send_wakers);
+        wake_all(&mut inner.recv_wakers);
+        // Notify after taking the lock: a waiter is then either already
+        // waiting or will see the stop condition before it waits.
+        drop(inner);
+        self.shared.notify();
+    }
+
     pub fn policy(&self) -> OverflowPolicy {
         self.shared.lock().policy
     }
@@ -340,9 +383,23 @@ impl Sender {
 
     /// Sends from a thread, blocking it until there is credit on a `Block`
     /// edge. Don't call this from an async task; use [`send`](Self::send).
-    pub fn send_blocking(&self, mut item: StreamItem) -> Result<Sent, SendError> {
+    pub fn send_blocking(&self, item: StreamItem) -> Result<Sent, SendError> {
+        self.send_blocking_until(item, || false)
+    }
+
+    /// Like [`send_blocking`](Self::send_blocking), but gives up and hands
+    /// the item back once `stop` returns true. `stop` is checked whenever the
+    /// thread wakes; call [`Edge::wake`] after making it true.
+    pub fn send_blocking_until(
+        &self,
+        mut item: StreamItem,
+        stop: impl Fn() -> bool,
+    ) -> Result<Sent, SendError> {
         let mut inner = self.shared.lock();
         loop {
+            if stop() {
+                return Err(SendError(item));
+            }
             match inner.offer(item, Mode::Wait) {
                 Ok(sent) => {
                     drop(inner);
@@ -353,6 +410,7 @@ impl Sender {
                     item = pending;
                     // Wait for a batch of credit, a policy change, or close.
                     while !inner.closed
+                        && !stop()
                         && inner.policy == OverflowPolicy::Block
                         && inner.buffer.free() < inner.grant_batch()
                     {
@@ -424,8 +482,18 @@ impl Receiver {
     /// Blocks the thread until the next item. Returns `None` once the edge
     /// is closed and drained.
     pub fn recv_blocking(&self) -> Option<StreamItem> {
+        self.recv_blocking_until(|| false)
+    }
+
+    /// Like [`recv_blocking`](Self::recv_blocking), but returns `None` once
+    /// `stop` returns true. `stop` is checked whenever the thread wakes; call
+    /// [`Edge::wake`] after making it true.
+    pub fn recv_blocking_until(&self, stop: impl Fn() -> bool) -> Option<StreamItem> {
         let mut inner = self.shared.lock();
         loop {
+            if stop() {
+                return None;
+            }
             match inner.take() {
                 Ok(item) => {
                     drop(inner);
@@ -478,11 +546,33 @@ impl FanOut {
 
     /// Sends to every open edge from a thread.
     pub fn send_blocking(&self, item: StreamItem) -> Result<(), SendError> {
+        self.send_blocking_until(item, || false)
+    }
+
+    /// Like [`send_blocking`](Self::send_blocking), but stops waiting on full
+    /// `Block` edges once `stop` returns true. Edges still waiting then miss
+    /// the item; it is not counted as a drop, because it never reached them.
+    pub fn send_blocking_until(
+        &self,
+        item: StreamItem,
+        stop: impl Fn() -> bool,
+    ) -> Result<(), SendError> {
         let blocked = self.offer_all(&item, Mode::Wait)?;
         for sender in blocked {
-            let _ = sender.send_blocking(item.clone());
+            if sender.send_blocking_until(item.clone(), &stop).is_err() && stop() {
+                return Err(SendError(item));
+            }
         }
         Ok(())
+    }
+
+    /// Number of edges this output feeds.
+    pub fn len(&self) -> usize {
+        self.senders.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.senders.is_empty()
     }
 
     /// Sends to every open edge from a live source, never waiting.
@@ -870,5 +960,69 @@ mod tests {
         assert_eq!(drain(&preview_rx), [10]);
         drop(preview_rx);
         assert!(out.send_live(item(11)).is_err());
+    }
+
+    #[test]
+    fn attach_reopens_idle_edges() {
+        let edge = Edge::new(4, OverflowPolicy::Block);
+        let tx = edge.attach_sender();
+        tx.try_send(item(0)).unwrap();
+        drop(tx);
+        assert!(edge.is_closed());
+
+        // A consumer of an ended stream gets what is left, then the end.
+        let rx = edge.attach_receiver();
+        assert!(edge.is_closed());
+        assert_eq!(rx.recv_blocking().unwrap().sequence, 0);
+        assert!(rx.recv_blocking().is_none());
+        drop(rx);
+
+        // With nothing queued and nobody attached, either side starts a new
+        // stream.
+        let rx = edge.attach_receiver();
+        assert!(!edge.is_closed());
+        let tx = edge.attach_sender();
+        tx.try_send(item(1)).unwrap();
+        drop(rx);
+        assert!(edge.is_closed());
+
+        // A producer can't reopen an edge whose consumer is still attached.
+        drop(tx);
+        let rx = edge.attach_receiver();
+        drop(edge.attach_sender());
+        let tx = edge.attach_sender();
+        assert!(tx.is_closed());
+        drop(rx);
+    }
+
+    #[test]
+    fn waiting_stops_when_asked() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = {
+            let stop = stop.clone();
+            move || stop.load(Ordering::SeqCst)
+        };
+
+        // A full edge: the producer waits until stopped.
+        let edge = Edge::new(1, OverflowPolicy::Block);
+        let (tx, rx) = (edge.sender(), edge.receiver());
+        tx.try_send(item(0)).unwrap();
+        let wait = stopped.clone();
+        let producer = thread::spawn(move || tx.send_blocking_until(item(1), wait));
+        // An empty edge: the consumer waits until stopped.
+        let empty = Edge::new(1, OverflowPolicy::Block);
+        let (_tx2, rx2) = (empty.sender(), empty.receiver());
+        let consumer = thread::spawn(move || rx2.recv_blocking_until(stopped));
+        thread::sleep(Duration::from_millis(20));
+        assert!(!producer.is_finished());
+        assert!(!consumer.is_finished());
+
+        stop.store(true, Ordering::SeqCst);
+        edge.wake();
+        empty.wake();
+        let SendError(back) = producer.join().unwrap().unwrap_err();
+        assert_eq!(back.sequence, 1);
+        assert!(consumer.join().unwrap().is_none());
+        assert_eq!(drain(&rx), [0]);
     }
 }

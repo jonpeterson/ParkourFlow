@@ -1,8 +1,9 @@
 //! Node startup checks.
 //!
-//! No node type processes data yet, so starting a node means passing
-//! [`preflight`]: the checks that depend on the outside world and so can't be
-//! made when a property is edited.
+//! Starting a node begins with [`preflight`]: the checks that depend on the
+//! outside world and so can't be made when a property is edited. The rest of
+//! startup (wiring checks, building the runner) is
+//! [`prepare`](crate::runner::prepare).
 
 use std::path::Path;
 

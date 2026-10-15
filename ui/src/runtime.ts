@@ -108,7 +108,7 @@ export interface Workflow {
   next_id: number;
 }
 
-export type NodeStatus = "STOPPED" | "STARTING" | "RUNNING" | "ERROR";
+export type NodeStatus = "STOPPED" | "STARTING" | "RUNNING" | "STOPPING" | "ERROR";
 
 export interface NodeState {
   status: NodeStatus;
@@ -161,9 +161,12 @@ export const setProperty = (id: NodeId, name: string, value: PropertyValue | nul
 export const listDeviceOptions = (deviceClass: string) =>
   invoke<DeviceOption[]>("list_device_options", { class: deviceClass });
 
-/** Starts a STOPPED or ERROR node. Resolves once it is STARTING; the outcome arrives via `onNodeStatus`. */
+/**
+ * Starts a STOPPED or ERROR node. Resolves once it is STARTING; RUNNING or
+ * ERROR, and STOPPED when the node finishes on its own, arrive via `onNodeStatus`.
+ */
 export const startNode = (id: NodeId) => invoke<void>("start_node", { id });
-/** Stops a RUNNING node. */
+/** Stops a RUNNING node. Resolves once it is STOPPING; STOPPED arrives via `onNodeStatus`. */
 export const stopNode = (id: NodeId) => invoke<void>("stop_node", { id });
 
 export interface NodeStatusEvent {
@@ -174,3 +177,11 @@ export interface NodeStatusEvent {
 /** Calls `handler` whenever a node's status changes. Resolves to an unsubscribe function. */
 export const onNodeStatus = (handler: (event: NodeStatusEvent) => void): Promise<UnlistenFn> =>
   listen<NodeStatusEvent>("node-status", (e) => handler(e.payload));
+
+/**
+ * Calls `handler` with every connection's stats (keyed by connection id)
+ * whenever any of them changes. Resolves to an unsubscribe function.
+ */
+export const onConnectionStats = (
+  handler: (stats: Record<string, EdgeStats>) => void,
+): Promise<UnlistenFn> => listen<Record<string, EdgeStats>>("connection-stats", (e) => handler(e.payload));

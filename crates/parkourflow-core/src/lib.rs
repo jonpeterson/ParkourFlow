@@ -11,6 +11,10 @@
 //! [`transport`] is the data plane between nodes: a bounded, credit-based
 //! channel per connection that applies the connection's overflow policy.
 //!
+//! [`runner`] is what a running node executes: the [`NodeRunner`] trait,
+//! its [`NodeContext`] of inputs and outputs, and the [`NodeRegistry`] of
+//! node types that can run.
+//!
 //! [`catalog`] lists the node types this build provides, and [`property`]
 //! defines the typed configuration fields they declare.
 
@@ -20,6 +24,8 @@ pub mod error;
 pub mod lifecycle;
 pub mod node;
 pub mod property;
+pub mod record;
+pub mod runner;
 pub mod state;
 pub mod transport;
 pub mod workflow;
@@ -31,6 +37,11 @@ pub use lifecycle::preflight;
 pub use node::{DataType, NodeKind, Port};
 pub use property::{
     device_options, Apply, DeviceOption, FileMode, Property, PropertyType, PropertyValue,
+};
+pub use record::Record;
+pub use runner::{
+    prepare, BuildRunner, CancelToken, Input, NodeContext, NodeRegistry, NodeRunner, Output,
+    OutputClosed, Pacing, PreparedRun, Wiring,
 };
 pub use state::{NodeState, NodeStatus, WorkflowState};
 pub use transport::{

@@ -222,7 +222,8 @@ body,
 }
 
 .pf-badge--running { color: var(--pf-source); border-color: var(--pf-source); }
-.pf-badge--starting { color: var(--pf-processor); border-color: var(--pf-processor); }
+.pf-badge--starting,
+.pf-badge--stopping { color: var(--pf-processor); border-color: var(--pf-processor); }
 .pf-badge--error { color: #c53030; border-color: #c53030; }
 
 .pf-field {
@@ -319,7 +320,8 @@ body,
 .pf-control--error { color: #c53030; border-color: #c53030; }
 .pf-control--primary { background: var(--pf-processor); border-color: var(--pf-processor); color: #fff; }
 
-.pf-badge--starting::after {
+.pf-badge--starting::after,
+.pf-badge--stopping::after {
   content: "…";
 }
 
@@ -353,3 +355,10 @@ body,
 }
 
 .pf-dialog__actions .pf-control { font-size: 13px; padding: 4px 12px; }
+
+/* Edge telemetry label: queue depth / capacity, and drops if any. The class
+   sits on the edge; the label is its `.react-flow__edge-text`. */
+.pf-edge-label .react-flow__edge-text { fill: var(--pf-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.pf-edge-label--busy .react-flow__edge-text { fill: var(--pf-processor); }
+.pf-edge-label--dropping .react-flow__edge-text { fill: #c53030; font-weight: 600; }
+.pf-edge-label .react-flow__edge-textbg { fill: var(--pf-panel); }

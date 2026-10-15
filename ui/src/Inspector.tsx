@@ -22,7 +22,7 @@ export function Inspector({ node, state, onChanged }: InspectorProps) {
   }
 
   const missing = runtime.missingRequired(node);
-  const running = state?.status === "RUNNING" || state?.status === "STARTING";
+  const running = state?.status === "RUNNING" || state?.status === "STARTING" || state?.status === "STOPPING";
 
   return (
     <aside className="pf-inspector">

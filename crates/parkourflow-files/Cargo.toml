@@ -1,0 +1,10 @@
+[package]
+name = "parkourflow-files"
+description = "ParkourFlow file nodes: CSV source and writer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parkourflow-core.workspace = true
+serde.workspace = true

@@ -15,7 +15,7 @@ import { Inspector } from "./Inspector";
 import { MetadataNode, type MetadataNodeType } from "./MetadataNode";
 import { ErrorDialog, NodeActionsContext, type NodeActions } from "./NodeControls";
 import * as runtime from "./runtime";
-import type { NodeDescriptor, NodeId, NodeState, Workflow } from "./runtime";
+import type { EdgeStats, NodeDescriptor, NodeId, NodeState, Workflow } from "./runtime";
 
 const nodeTypes = { metadata: MetadataNode };
 
@@ -48,15 +48,29 @@ function toFlowNodes(
   });
 }
 
-function toFlowEdges(workflow: Workflow): Edge[] {
-  return Object.values(workflow.connections).map((c) => ({
-    id: String(c.id),
-    source: String(c.from.node),
-    sourceHandle: c.from.port,
-    target: String(c.to.node),
-    targetHandle: c.to.port,
-    label: `buffer ${c.buffer_capacity}`,
-  }));
+// Edge label: queue depth over capacity, plus the drop count once anything
+// was dropped. Falls back to the configured capacity before stats arrive.
+function edgeLabel(stats: EdgeStats | undefined, capacity: number) {
+  if (!stats) return { label: `0/${capacity}`, labelClassName: "pf-edge-label" };
+  const dropped = stats.dropped > 0 ? ` · ${stats.dropped} dropped` : "";
+  const modifier = stats.dropped > 0 ? " pf-edge-label--dropping" : stats.queue_depth > 0 ? " pf-edge-label--busy" : "";
+  return { label: `${stats.queue_depth}/${stats.capacity}${dropped}`, labelClassName: `pf-edge-label${modifier}` };
+}
+
+function toFlowEdges(workflow: Workflow, stats: Record<string, EdgeStats>): Edge[] {
+  return Object.values(workflow.connections).map((c) => {
+    const { label, labelClassName } = edgeLabel(stats[String(c.id)], c.buffer_capacity);
+    return {
+      id: String(c.id),
+      source: String(c.from.node),
+      sourceHandle: c.from.port,
+      target: String(c.to.node),
+      targetHandle: c.to.port,
+      label,
+      className: labelClassName,
+      data: { capacity: c.buffer_capacity },
+    };
+  });
 }
 
 export default function App() {
@@ -72,9 +86,16 @@ export default function App() {
 
   // Re-read the workflow and node status from the runtime and redraw.
   const refresh = useCallback(async () => {
-    const [workflow, statuses] = await Promise.all([runtime.getWorkflow(), runtime.nodeStatuses()]);
+    const [workflow, statuses, stats] = await Promise.all([
+      runtime.getWorkflow(),
+      runtime.nodeStatuses(),
+      runtime.connectionStats(),
+    ]);
     setNodes((prev) => toFlowNodes(workflow, statuses, descriptorsRef.current, prev));
-    setEdges(toFlowEdges(workflow));
+    setEdges((prev) => {
+      const selected = new Set(prev.filter((e) => e.selected).map((e) => e.id));
+      return toFlowEdges(workflow, stats).map((e) => ({ ...e, selected: selected.has(e.id) }));
+    });
   }, [setNodes, setEdges]);
 
   // Run a backend edit, show its error if it fails, and redraw either way.
@@ -116,6 +137,20 @@ export default function App() {
     );
     return () => void unlisten.then((stop) => stop());
   }, [setNodes]);
+
+  // Apply edge telemetry pushed by the runtime (queue depth, drops).
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisten = runtime.onConnectionStats((stats) =>
+      setEdges((prev) =>
+        prev.map((e) => {
+          const { label, labelClassName } = edgeLabel(stats[e.id], (e.data?.capacity as number) ?? 0);
+          return e.label === label ? e : { ...e, label, className: labelClassName };
+        }),
+      ),
+    );
+    return () => void unlisten.then((stop) => stop());
+  }, [setEdges]);
 
   // Start/stop: disable the node's buttons until the runtime answers. The
   // new status itself arrives through `onNodeStatus`.

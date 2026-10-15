@@ -93,9 +93,9 @@ fn delimiter() -> Property {
 /// The node types built into this build of the runtime.
 ///
 /// The first three (pcap source, DNS parser, CSV writer) form the demo DNS
-/// pipeline used in tests.
+/// pipeline used in tests. The DNS parser emits one `Record` per message so
+/// it can feed record sinks such as the CSV writer directly.
 pub fn builtin_nodes() -> Vec<NodeDescriptor> {
-    let dns_message = DataType::new("DnsMessage");
     vec![
         NodeDescriptor {
             type_id: "net.pcap_source".into(),
@@ -139,7 +139,7 @@ pub fn builtin_nodes() -> Vec<NodeDescriptor> {
             kind: NodeKind::Processor,
             category: "Network".into(),
             inputs: vec![Port::new("packets", DataType::PACKET)],
-            outputs: vec![Port::new("messages", dns_message.clone())],
+            outputs: vec![Port::new("messages", DataType::RECORD)],
             properties: vec![Property::new(
                 "include_responses",
                 "Include responses",
@@ -153,7 +153,7 @@ pub fn builtin_nodes() -> Vec<NodeDescriptor> {
             label: "CSV Writer".into(),
             kind: NodeKind::Sink,
             category: "Files".into(),
-            inputs: vec![Port::new("records", dns_message)],
+            inputs: vec![Port::new("records", DataType::RECORD)],
             outputs: vec![],
             properties: vec![
                 Property::new(

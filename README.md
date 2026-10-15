@@ -8,7 +8,7 @@ The project aims to stay flexible and low-level enough for experimentation while
 - explicit stream semantics, and
 - easy integration with libraries like FFmpeg, libpcap, and GPU APIs.
 
-> **Status:** Early design. The repo holds a hello-world scaffold: a Tauri shell whose React Flow canvas renders node types supplied by the Rust runtime.
+> **Status:** Early design. A Tauri shell whose React Flow canvas edits a workflow held by the Rust runtime. Nodes start and stop individually; CSV Source and CSV Writer are the first nodes that process data.
 
 ---
 
@@ -20,7 +20,7 @@ The project aims to stay flexible and low-level enough for experimentation while
 ┌────────────┐       ┌──────────────┐       ┌────────────┐
 │   Source   │──────▶│  Processor   │──────▶│    Sink    │
 │            │       │              │       │            │
-│ libpcap    │Packet │ DNS Parser   │DNS Msg│ CSV Writer │
+│ libpcap    │Packet │ DNS Parser   │Record │ CSV Writer │
 └────────────┘       └──────────────┘       └────────────┘
 
 
@@ -98,8 +98,8 @@ Workflow
 └── Group (root)
     ├── Node  "Capture"   source     out: packets <Packet>
     └── Group "Parsing"
-        ├── Node "Parse"  processor  in: packets <Packet>   out: messages <DnsMessage>
-        └── Node "Write"  sink       in: records <DnsMessage>
+        ├── Node "Parse"  processor  in: packets <Packet>   out: messages <Record>
+        └── Node "Write"  sink       in: records <Record>
 
 Connections (workflow level; may cross groups)
     Capture.packets ──▶ Parse.packets     buffer_capacity: 64
@@ -118,7 +118,7 @@ Connections (workflow level; may cross groups)
 - **Ports** have a name and a **data type** such as `Packet`, `Frame`, `Texture`, `Audio`, or `Record`. Node modules can define more data types.
 - **Connections** join a node's output port, which emits data, to another node's input port, which receives it. A connection is only allowed when both ports carry the same data type. One output can feed many inputs, but each input accepts only one connection.
 - **Buffers.** Each connection has a configurable `buffer_capacity` and `overflow_policy`. At runtime it gets an *edge*: a bounded FIFO of stream items. A full buffer never grows; the connection's overflow policy decides what happens next (see [Flow control](#flow-control)).
-- **Node status** is `STOPPED`, `STARTING`, `RUNNING`, or `ERROR`. A node in `ERROR` carries an error message. See [Node lifecycle](#node-lifecycle).
+- **Node status** is `STOPPED`, `STARTING`, `RUNNING`, `STOPPING`, or `ERROR`. A node in `ERROR` carries an error message. See [Node lifecycle](#node-lifecycle).
 - **Stream items** carry a sequence number, an optional timestamp, and a payload. The payload is shared by reference (`Arc`), not copied.
 
 ### Node lifecycle
@@ -128,14 +128,18 @@ Nodes are started and stopped individually.
 | From | Action | To |
 | --- | --- | --- |
 | `STOPPED` | start | `STARTING` |
-| `STARTING` | startup succeeds | `RUNNING` |
+| `STARTING` | startup succeeds | `RUNNING` (its runner starts) |
 | `STARTING` | startup fails | `ERROR` (with a message) |
-| `RUNNING` | stop | `STOPPED` |
+| `RUNNING` | stop | `STOPPING` (its runner is cancelled) |
+| `RUNNING`, `STOPPING` | runner returns | `STOPPED` |
+| `RUNNING`, `STOPPING` | runner returns an error or panics | `ERROR` (with the message) |
 | `ERROR` | start (retry) | `STARTING` |
 
-Any other request, such as stopping a node that is `STARTING`, is rejected. The transition rules live in `WorkflowState` (`begin_start`, `finish_start`, `stop`).
+Any other request, such as stopping a node that is `STARTING`, is rejected. The transition rules live in `WorkflowState` (`begin_start`, `finish_start`, `begin_stop`, `finish_run`).
 
-**Startup** runs off the command thread, so `start_node` returns as soon as the node is `STARTING`. Startup currently means passing `preflight`: required properties are set, files to read exist, and folders to write into exist. No node type processes data yet, so a `RUNNING` node is not doing any work. Device properties are not checked yet.
+**Startup** runs on the node's own thread, so `start_node` returns as soon as the node is `STARTING`. Startup means passing `preflight` (required properties are set, files to read exist, folders to write into exist; device properties are not checked yet), having every input connected (and, for a source, at least one output), and building the node's runner, which opens its files. The same thread then runs the node. See [Node execution](#node-execution).
+
+**Stopping** cancels the runner and returns at once with the node `STOPPING`; it becomes `STOPPED` once the runner has actually returned. A node also stops on its own when its work is done: a CSV Source at the end of its file, a CSV Writer at the end of its input stream.
 
 **Status changes are pushed, not polled.** The runtime emits a `node-status` event (`{ id, state }`) on every transition, and the UI updates the node from it.
 
@@ -146,13 +150,14 @@ Any other request, such as stopping a node that is `STARTING`, is rejected. The 
 | `STOPPED` | **Start** |
 | `STARTING` | None |
 | `RUNNING` | **Stop** |
+| `STOPPING` | None |
 | `ERROR` | **Details** (opens a dialog with the error message) and **Retry**. Hovering the status shows the message too. |
 
 A button disables as soon as it is clicked and stays disabled until the runtime answers, so a double click sends only one request.
 
 ### Flow control
 
-> **Status:** Implemented in `parkourflow-core` (`transport` module). Nodes and graph execution don't use it yet.
+> **Status:** Implemented in `parkourflow-core` (`transport` module) and used by running nodes (see [Node execution](#node-execution)).
 
 ParkourFlow uses a **hybrid** model: demand flows upstream as the default, and each connection has an **overflow policy** for producers that cannot wait.
 
@@ -206,7 +211,35 @@ Rules:
 - Shrinking a buffer or switching to `KeepLatest` drops the oldest items, and those drops are counted too.
 - An edge closes when its last `Sender` or its `Receiver` drops, or when its connection is removed. A closed edge fails sends; the receiver gets the remaining items and then the end of the stream.
 - The channel uses only `std` synchronization (`Mutex`, `Condvar`, `Waker`), so it doesn't depend on Tokio.
-- Telemetry: `Edge::stats()` returns queue depth, effective capacity, and drop count. The UI reads them with the `connection_stats` command.
+- Telemetry: `Edge::stats()` returns queue depth, effective capacity, and drop count. The shell samples every edge every 250 ms and emits a `connection-stats` event when anything changed; the UI also reads them with the `connection_stats` command when it redraws. Each edge on the canvas is labelled `queue depth/capacity`, plus `· N dropped` (in red) once it has dropped anything.
+
+### Node execution
+
+A running node runs a **runner**: code built from the node's configuration that moves data between its ports. The API lives in `parkourflow-core` (`runner` module); node implementations live in node-module crates such as `parkourflow-files`.
+
+```rust
+pub trait NodeRunner: Send + 'static {
+    fn pacing(&self) -> Pacing { Pacing::Pausable }   // or Pacing::Live
+    fn run(self: Box<Self>, ctx: NodeContext) -> Result<(), String>;
+}
+```
+
+- **Building.** A node-module crate registers a builder per node type in a `NodeRegistry` (`registry.register("file.csv_source", CsvSource::build)`). The builder reads the node's typed config with `Node::config::<T>()` and opens what it needs, so a missing or unreadable file fails the start with a message. Starting a node type with no registered runner fails with an error.
+- **Context.** `NodeContext` has an `Input` for each input port and an `Output` for each output port. An `Output` feeds every connection from its port (a `FanOut`). `Input::recv` waits for the next item and returns `None` at the end of the stream; `Output::send` waits for credit on full `Block` edges.
+- **Live or pausable.** `NodeRunner::pacing` is asked once after the runner is built, so it can depend on properties (a real-time PCAP replay is live). A pausable node's `Output::send` waits for credit; a live node's never waits and drops (and counts) instead, as described under [Flow control](#flow-control).
+- **Threads.** Each running node gets a dedicated OS thread. That suits file and record nodes; async tasks, DSP blocks, and GPU queues can get their own execution domains later behind the same trait. The session lock is never held while a runner works.
+- **Cancellation.** Stopping a node cancels its `CancelToken`, which wakes every edge the node is attached to. `Input::recv` and `Output::send` return as soon as the node is cancelled, even mid-wait; other loops check `NodeContext::is_cancelled`.
+- **End of stream.** When a runner returns, its edge handles drop and its edges close. Downstream nodes drain what is queued, see the end of the stream, and finish; upstream nodes see `Output::send` fail and finish. So stopping a source winds down the pipeline below it, and a CSV copy stops by itself when the file is done. A node that is started again reopens its idle edges and begins a new stream.
+- **Failures.** A runner that returns `Err` or panics puts the node in `ERROR` with the message ("Node crashed: …" for a panic).
+- **Connections changed while running** are picked up at the next start. Removing a connection closes its edge, which ends that stream for the running nodes on either side; removing a running node cancels it.
+
+#### CSV nodes
+
+`parkourflow-files` implements CSV Source and CSV Writer, so a CSV Source wired to a CSV Writer copies a file. Rows travel as `Record` items: `columns` (the header, shared by every row of a file through an `Arc`) and `values`. The file contents stay in Rust; only the paths cross into the UI.
+
+- **CSV Source** reads `path` with `delimiter`; with `has_header` on, the first row becomes the column names. It is pausable, so it reads only as fast as downstream takes rows. A malformed row (such as an unclosed quote) is an `ERROR` naming the file and line.
+- **CSV Writer** creates (or truncates) `path` when it starts, writes the first record's column names as a header if `write_header` is on and there are any, then one row per record, and flushes when its input ends or it is stopped.
+- Parsing follows RFC 4180: quoted fields can hold the delimiter, line breaks, and `""`; rows end in `\n` or `\r\n`; blank lines are skipped; rows may differ in length. It is a small hand-written module (`format.rs`) for now.
 
 ### Node properties
 
@@ -289,12 +322,14 @@ At first, node modules are **statically linked**: built-in crates for media, net
 
 - [x] Core graph model: nodes, typed ports, edges, groups, validation
 - [x] Edge transport: demand (credit) signaling, overflow policies, drop counters
-- [ ] Graph lifecycle: build, start, stop, cancel, error propagation
+- [x] Node lifecycle: start, stop, cancel, error propagation (per node)
+- [ ] Graph lifecycle: start and stop a whole workflow
 - [x] Node metadata schema: typed properties, validation, inspector
 - [ ] JSON workflow import/export
 - [ ] Tauri shell with React Flow editor driven by node metadata
-- [ ] Control-plane commands and telemetry events
-- [ ] First node modules: files, structured records, libpcap, FFmpeg
+- [x] Control-plane commands and telemetry events (node status, queue depth, drops)
+- [x] First node module: files (CSV Source, CSV Writer) and structured records
+- [ ] More node modules: libpcap, FFmpeg
 - [ ] wgpu-backed nodes and GPU texture streams
 - [ ] Audio / DSP execution domain
 - [ ] Dynamic plugin system (after the node API stabilizes)
@@ -318,6 +353,8 @@ pnpm tauri dev
 
 The app opens a window with an empty workflow. Add nodes from the palette on the left, drag between ports to connect them, and select a node or edge and press Backspace/Delete to remove it. Every edit goes to the Rust runtime, which validates it; rejected edits (for example, mismatched stream types or a second connection into one input) show an error in the toolbar. Node positions are kept only in the UI for now.
 
+To copy a CSV file: add a **CSV Source** and a **CSV Writer**, connect `records` to `records`, set each node's file in the inspector, then press **Start** on the writer and on the source. Both return to `STOPPED` when the copy is done. The edge label shows the queue depth while rows flow.
+
 ### Other commands
 
 | Command | Purpose |
@@ -339,6 +376,11 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/catalog.rs          node type descriptors
   src/property.rs         typed node properties: schema, values, validation
   src/lifecycle.rs        startup checks (preflight) for starting a node
+  src/runner.rs           node execution: NodeRunner, NodeContext, NodeRegistry, cancellation
+  src/record.rs           Record, the payload of Record streams
+crates/parkourflow-files/ file nodes: CSV Source and CSV Writer
+  src/csv.rs              the CSV node runners
+  src/format.rs           RFC 4180 row reader and writer
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)
