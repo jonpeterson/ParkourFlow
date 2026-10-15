@@ -94,3 +94,71 @@ body,
 
 .pf-port em { color: var(--pf-muted); font-style: normal; }
 .pf-port--out { text-align: right; }
+
+.pf-node__status {
+  padding: 3px 10px;
+  border-top: 1px solid var(--pf-border);
+  color: var(--pf-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.pf-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 2px 4px 2px 10px;
+  border-radius: 4px;
+  background: #c53030;
+  color: #fff;
+  font-size: 12px;
+}
+
+.pf-error button {
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.pf-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.pf-palette {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 200px;
+  padding: 12px;
+  border-right: 1px solid var(--pf-border);
+  background: var(--pf-panel);
+}
+
+.pf-palette h2 {
+  margin: 0 0 4px;
+  color: var(--pf-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.pf-palette__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 1px solid var(--pf-border);
+  border-left: 3px solid var(--pf-accent);
+  border-radius: 4px;
+  background: var(--pf-bg);
+  color: var(--pf-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}

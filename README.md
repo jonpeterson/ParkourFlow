@@ -176,7 +176,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-The app opens a window with a canvas showing the built-in demo nodes. You can only connect ports whose stream types match.
+The app opens a window with an empty workflow. Add nodes from the palette on the left, drag between ports to connect them, and select a node or edge and press Backspace/Delete to remove it. Every edit goes to the Rust runtime, which validates it; rejected edits (for example, mismatched stream types or a second connection into one input) show an error in the toolbar. Node positions are kept only in the UI for now.
 
 ### Other commands
 
@@ -197,9 +197,11 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/buffer.rs           bounded connection buffer and stream items
   src/catalog.rs          node type descriptors
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
+  src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)
   src/runtime.ts          typed wrappers for Tauri commands
-  src/MetadataNode.tsx    generic node renderer driven by NodeDescriptor
+  src/App.tsx             canvas + node palette; edits call the runtime, then redraw
+  src/MetadataNode.tsx    generic node renderer driven by node metadata
 ```
 
 ## Contributing

@@ -1,20 +1,23 @@
-// Generic node renderer: draws any node type from its runtime metadata.
+// Generic node renderer: draws any node from its runtime metadata.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import type { NodeDescriptor } from "./runtime";
+import type { NodeState, WorkflowNode } from "./runtime";
 
-export type MetadataNodeType = Node<{ descriptor: NodeDescriptor }, "metadata">;
+export type MetadataNodeType = Node<
+  { node: WorkflowNode; category: string; state?: NodeState },
+  "metadata"
+>;
 
 export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
-  const { descriptor } = data;
+  const { node, category, state } = data;
   return (
-    <div className={`pf-node pf-node--${descriptor.kind}`}>
+    <div className={`pf-node pf-node--${node.kind}`}>
       <div className="pf-node__header">
-        <span className="pf-node__label">{descriptor.label}</span>
-        <span className="pf-node__category">{descriptor.category}</span>
+        <span className="pf-node__label">{node.name}</span>
+        <span className="pf-node__category">{category}</span>
       </div>
       <div className="pf-node__ports">
         <div>
-          {descriptor.inputs.map((p) => (
+          {node.inputs.map((p) => (
             <div key={p.name} className="pf-port pf-port--in">
               <Handle type="target" position={Position.Left} id={p.name} />
               {p.name} <em>{p.data_type}</em>
@@ -22,7 +25,7 @@ export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
           ))}
         </div>
         <div>
-          {descriptor.outputs.map((p) => (
+          {node.outputs.map((p) => (
             <div key={p.name} className="pf-port pf-port--out">
               {p.name} <em>{p.data_type}</em>
               <Handle type="source" position={Position.Right} id={p.name} />
@@ -30,6 +33,11 @@ export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
           ))}
         </div>
       </div>
+      {state && (
+        <div className="pf-node__status" title={state.error ?? undefined}>
+          {state.status}
+        </div>
+      )}
     </div>
   );
 }
