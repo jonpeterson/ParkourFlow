@@ -1,0 +1,15 @@
+[package]
+name = "parkourflow-net"
+description = "ParkourFlow network nodes: Read Network Interface (libpcap)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parkourflow-core.workspace = true
+serde.workspace = true
+pcap = "2.5"
+
+[dev-dependencies]
+# Only to build pcap packet headers in tests; pcap already depends on it.
+libc = "0.2"

@@ -250,13 +250,11 @@ pub struct DeviceOption {
     pub label: String,
 }
 
-/// Lists the devices currently available for a device class.
+/// Lists the devices currently available for a device class. Node modules
+/// register one per class with [`NodeRegistry::register_devices`].
 ///
-/// No device backends exist yet, so every class returns an empty list. Node
-/// modules (libpcap, FFmpeg, audio) will provide real enumeration.
-pub fn device_options(_class: &str) -> Vec<DeviceOption> {
-    Vec::new()
-}
+/// [`NodeRegistry::register_devices`]: crate::NodeRegistry::register_devices
+pub type ListDevices = fn() -> Result<Vec<DeviceOption>, String>;
 
 #[cfg(test)]
 mod tests {

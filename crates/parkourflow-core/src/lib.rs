@@ -23,6 +23,7 @@ pub mod catalog;
 pub mod error;
 pub mod lifecycle;
 pub mod node;
+pub mod packet;
 pub mod property;
 pub mod record;
 pub mod runner;
@@ -35,8 +36,9 @@ pub use catalog::{builtin_nodes, NodeDescriptor};
 pub use error::WorkflowError;
 pub use lifecycle::preflight;
 pub use node::{DataType, NodeKind, Port};
+pub use packet::Packet;
 pub use property::{
-    device_options, Apply, DeviceOption, FileMode, Property, PropertyType, PropertyValue,
+    Apply, DeviceOption, FileMode, ListDevices, Property, PropertyType, PropertyValue,
 };
 pub use record::Record;
 pub use runner::{

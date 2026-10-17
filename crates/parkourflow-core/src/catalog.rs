@@ -99,7 +99,7 @@ pub fn builtin_nodes() -> Vec<NodeDescriptor> {
     vec![
         NodeDescriptor {
             type_id: "net.pcap_source".into(),
-            label: "libpcap Source".into(),
+            label: "Read Network Interface".into(),
             kind: NodeKind::Source,
             category: "Network".into(),
             inputs: vec![],

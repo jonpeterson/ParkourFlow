@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 parkourflow-core.workspace = true
 parkourflow-files.workspace = true
+parkourflow-net.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }

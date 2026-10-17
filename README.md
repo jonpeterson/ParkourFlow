@@ -241,6 +241,27 @@ pub trait NodeRunner: Send + 'static {
 - **CSV Writer** creates (or truncates) `path` when it starts, writes the first record's column names as a header if `write_header` is on and there are any, then one row per record, and flushes when its input ends or it is stopped.
 - Parsing and quoting use the [`csv`](https://crates.io/crates/csv) crate, behind a small `format.rs` interface: quoted fields can hold the delimiter, line breaks, and `""`; rows end in `\n` or `\r\n` (written as `\n`); blank lines are skipped; rows may differ in length.
 
+#### Network nodes
+
+`parkourflow-net` implements **Read Network Interface** (`net.pcap_source`), a live capture source built on libpcap through the [`pcap`](https://crates.io/crates/pcap) crate (Npcap on Windows).
+
+- **Properties:** `interface` (a device picked from the interfaces libpcap finds), `filter` (a BPF expression such as `udp port 53`; empty captures everything), `promiscuous`, and `snaplen` (bytes kept per packet).
+- **Opening the interface happens at start,** so a missing interface, an invalid filter, or missing capture permission is an `ERROR` with a message saying what to fix.
+- **Output:** one `Packet` item per captured packet on `packets`. A `Packet` (`parkourflow-core/src/packet.rs`) carries the capture time, the interface name, the link type (`LINKTYPE_*`, 1 for Ethernet), the length on the wire, and the captured bytes. The item's `timestamp` is the time since the run's first packet. Packets stay in Rust.
+- **It is live:** an interface can't be paused, so on a full connection the packet is dropped by the connection's overflow policy and counted, even on `Block` connections.
+- **Stopping:** reads time out every 100 ms, so a node on a quiet interface still stops promptly.
+- **Unbounded:** the node runs until it is stopped or capture fails.
+
+Why libpcap rather than a pure-Rust capture library: it gives kernel-side BPF filters, capture files (for a future PCAP File Source) and interface descriptions on all three platforms. The pure-Rust alternative, `pnet`, still needs Npcap on Windows and the same `/dev/bpf` access on macOS.
+
+**Capture permissions** are needed to open an interface, but not to list them:
+
+| Platform | What's needed |
+| --- | --- |
+| macOS | Read access to `/dev/bpf*`, which is root-only by default. Install Wireshark's ChmodBPF package (it adds an `access_bpf` group), or run as root. |
+| Linux | The `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities, or root. |
+| Windows | [Npcap](https://npcap.com) installed. Unless you restrict it to administrators, normal users can capture. |
+
 ### Node properties
 
 Each node type declares typed configuration fields, called **properties**, alongside its ports. The UI's inspector renders a form for the selected node from these declarations, so most node types need no frontend code.
@@ -251,7 +272,7 @@ There is no "file node" or "device node" category. A CSV source, a PCAP file rep
 | --- | --- |
 | CSV Source | `path` (file, open, `.csv`/`.tsv`, required), `delimiter` (enum), `has_header` (bool) |
 | PCAP File Source | `path` (file, open, `.pcap`/`.pcapng`, required), `realtime` (bool), `speed` (float, live) |
-| libpcap Source | `interface` (device, required), `filter` (string), `promiscuous` (bool), `snaplen` (integer, 64–262144) |
+| Read Network Interface | `interface` (device, required), `filter` (string), `promiscuous` (bool), `snaplen` (integer, 64–262144) |
 | CSV Writer | `path` (file, save, `.csv`, required), `delimiter` (enum), `write_header` (bool) |
 
 #### Property types
@@ -267,7 +288,7 @@ There is no "file node" or "device node" category. A CSV source, a PCAP file rep
 | `directory` | Path + **Browse…** (OS folder dialog) | |
 | `device { class }` | Drop-down of devices the runtime finds right now, e.g. `network_interface` | |
 
-Devices come and go while the app runs, so their options are not part of the node type. The UI asks the runtime with `list_device_options(class)` when the field is shown. No device backends exist yet, so every class currently returns an empty list and the inspector falls back to a text box.
+Devices come and go while the app runs, so their options are not part of the node type. The UI asks the runtime with `list_device_options(class)` when the field is shown, and node modules register a lister per class (`NodeRegistry::register_devices`). `parkourflow-net` lists `network_interface` devices: interfaces that are up and have addresses come first, labeled with their description and addresses. A class with no lister returns an empty list, and the inspector falls back to a text box.
 
 A file path is configuration, so it crosses the IPC boundary; the file's contents never do.
 
@@ -343,6 +364,11 @@ At first, node modules are **statically linked**: built-in crates for media, net
 - [Rust](https://rustup.rs) (stable; `rust-toolchain.toml` selects it)
 - Node.js and [pnpm](https://pnpm.io)
 - Platform prerequisites for Tauri: see [Tauri's guide](https://v2.tauri.app/start/prerequisites/). On macOS that means the Xcode Command Line Tools.
+- libpcap, for network capture nodes:
+  - **macOS:** included with the Xcode Command Line Tools.
+  - **Linux:** the development package, e.g. `sudo apt install libpcap-dev`.
+  - **Windows:** [Npcap](https://npcap.com) and the Npcap SDK, with the SDK's `Lib/x64` folder on `LIB` (or in `LIBPCAP_LIBDIR`).
+  - Capturing also needs permissions; see [Network nodes](#network-nodes).
 
 ### Run
 
@@ -378,9 +404,12 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/lifecycle.rs        startup checks (preflight) for starting a node
   src/runner.rs           node execution: NodeRunner, NodeContext, NodeRegistry, cancellation
   src/record.rs           Record, the payload of Record streams
+  src/packet.rs           Packet, the payload of Packet streams
 crates/parkourflow-files/ file nodes: CSV Source and CSV Writer
   src/csv.rs              the CSV node runners
   src/format.rs           CSV row reader and writer (wraps the csv crate)
+crates/parkourflow-net/   network nodes: Read Network Interface (libpcap)
+  src/interface.rs        live capture source and interface listing
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)

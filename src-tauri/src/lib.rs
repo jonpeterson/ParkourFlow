@@ -334,14 +334,15 @@ fn set_property(
 
 /// Lists the devices currently available for a device property's class.
 #[tauri::command]
-fn list_device_options(class: String) -> Vec<DeviceOption> {
-    parkourflow_core::device_options(&class)
+fn list_device_options(app: State<AppState>, class: String) -> Result<Vec<DeviceOption>, String> {
+    app.registry.device_options(&class)
 }
 
 /// The node types this build can run.
 fn registry() -> NodeRegistry {
     let mut registry = NodeRegistry::new();
     parkourflow_files::register(&mut registry);
+    parkourflow_net::register(&mut registry);
     registry
 }
 
@@ -688,6 +689,15 @@ mod tests {
             std::fs::read_to_string(&input).unwrap()
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lists_network_interfaces() {
+        // The app registry includes parkourflow-net's interface list, which
+        // needs no capture privileges.
+        let interfaces = registry().device_options("network_interface").unwrap();
+        assert!(!interfaces.is_empty());
+        assert_eq!(registry().device_options("camera"), Ok(vec![]));
     }
 
     #[test]

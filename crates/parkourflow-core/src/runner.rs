@@ -30,6 +30,7 @@ use serde::Serialize;
 use crate::buffer::StreamItem;
 use crate::lifecycle::preflight;
 use crate::node::NodeKind;
+use crate::property::{DeviceOption, ListDevices};
 use crate::transport::{Edge, FanOut, Receiver};
 use crate::workflow::{Node, NodeId};
 
@@ -72,10 +73,12 @@ pub trait NodeRunner: Send + 'static {
 /// the user, e.g. when a file can't be opened.
 pub type BuildRunner = fn(&Node) -> Result<Box<dyn NodeRunner>, String>;
 
-/// The node types that can run, by `type_id`.
+/// The node types that can run, by `type_id`, and the device lists for
+/// device properties, by device class.
 #[derive(Clone, Default)]
 pub struct NodeRegistry {
     builders: HashMap<String, BuildRunner>,
+    devices: HashMap<String, ListDevices>,
 }
 
 impl NodeRegistry {
@@ -86,6 +89,24 @@ impl NodeRegistry {
     pub fn register(&mut self, type_id: impl Into<String>, build: BuildRunner) -> &mut Self {
         self.builders.insert(type_id.into(), build);
         self
+    }
+
+    /// Registers how to list the devices of `class` (e.g.
+    /// `network_interface`) for [`PropertyType::Device`] properties.
+    ///
+    /// [`PropertyType::Device`]: crate::PropertyType::Device
+    pub fn register_devices(&mut self, class: impl Into<String>, list: ListDevices) -> &mut Self {
+        self.devices.insert(class.into(), list);
+        self
+    }
+
+    /// The devices of `class` available right now. Empty for a class nothing
+    /// registered.
+    pub fn device_options(&self, class: &str) -> Result<Vec<DeviceOption>, String> {
+        match self.devices.get(class) {
+            Some(list) => list(),
+            None => Ok(Vec::new()),
+        }
     }
 
     pub fn contains(&self, type_id: &str) -> bool {
@@ -105,8 +126,11 @@ impl fmt::Debug for NodeRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut types: Vec<_> = self.builders.keys().collect();
         types.sort();
+        let mut classes: Vec<_> = self.devices.keys().collect();
+        classes.sort();
         f.debug_struct("NodeRegistry")
             .field("types", &types)
+            .field("device_classes", &classes)
             .finish()
     }
 }
