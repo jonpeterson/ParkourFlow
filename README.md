@@ -243,7 +243,9 @@ pub trait NodeRunner: Send + 'static {
 
 #### Network nodes
 
-`parkourflow-net` implements **Read Network Interface** (`net.pcap_source`), a live capture source built on libpcap through the [`pcap`](https://crates.io/crates/pcap) crate (Npcap on Windows).
+`parkourflow-net` implements two nodes: **Read Network Interface** (`net.pcap_source`), a live capture source built on libpcap through the [`pcap`](https://crates.io/crates/pcap) crate (Npcap on Windows), and **Packet Summary** (`net.packet_summary`), which turns packets into records.
+
+**Read Network Interface:**
 
 - **Properties:** `interface` (a device picked from the interfaces libpcap finds), `filter` (a BPF expression such as `udp port 53`; empty captures everything), `promiscuous`, and `snaplen` (bytes kept per packet).
 - **Opening the interface happens at start,** so a missing interface, an invalid filter, or missing capture permission is an `ERROR` with a message saying what to fix.
@@ -251,6 +253,21 @@ pub trait NodeRunner: Send + 'static {
 - **It is live:** an interface can't be paused, so on a full connection the packet is dropped by the connection's overflow policy and counted, even on `Block` connections.
 - **Stopping:** reads time out every 100 ms, so a node on a quiet interface still stops promptly.
 - **Unbounded:** the node runs until it is stopped or capture fails.
+
+**Packet Summary** turns each `Packet` into one `Record` with these columns:
+
+| Column | Value |
+| --- | --- |
+| `time` | Capture time, UTC, ISO 8601 with microseconds (`2023-11-14T22:13:20.123456Z`) |
+| `length` | Length on the wire, in bytes |
+| `protocol` | The innermost protocol understood: `TCP`, `UDP`, `SCTP`, `ICMP`, `ICMPv6`, `IGMP`, `GRE`, `ESP`, `ARP`, `IPv4 proto N`, `Ethernet 0xNNNN`, … |
+| `source`, `destination` | `ip:port` for TCP/UDP/SCTP (`[ip]:port` for IPv6), the IP for other IP traffic and ARP, the MAC for other Ethernet traffic |
+
+- **Headers it understands** (`headers.rs`, hand-written, no dependency): Ethernet with up to two VLAN tags, BSD loopback (macOS `lo0` and `utun`), raw IP, Linux cooked capture, IPv4, and IPv6 with extension headers.
+- **Partial packets are fine:** a packet cut short by the snapshot length, or a later IP fragment, gives as much as could be read; it never fails the node.
+- **It is pausable:** it waits for credit downstream. Behind a live source, any loss happens on the source's connection, where it is counted.
+
+**End to end:** wire **Read Network Interface → Packet Summary → CSV Writer**, pick an interface and an output file, then start the CSV Writer, the Packet Summary, and the Read Network Interface, in that order. Packets are written as CSV rows until you stop the source. Stopping it ends the stream, so the other two finish on their own and the writer flushes the file. Starting the source first works too, but packets that arrive before the others run fill its connection and are dropped.
 
 Why libpcap rather than a pure-Rust capture library: it gives kernel-side BPF filters, capture files (for a future PCAP File Source) and interface descriptions on all three platforms. The pure-Rust alternative, `pnet`, still needs Npcap on Windows and the same `/dev/bpf` access on macOS.
 
@@ -408,8 +425,10 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
 crates/parkourflow-files/ file nodes: CSV Source and CSV Writer
   src/csv.rs              the CSV node runners
   src/format.rs           CSV row reader and writer (wraps the csv crate)
-crates/parkourflow-net/   network nodes: Read Network Interface (libpcap)
+crates/parkourflow-net/   network nodes: Read Network Interface (libpcap), Packet Summary
   src/interface.rs        live capture source and interface listing
+  src/summary.rs          Packet Summary runner
+  src/headers.rs          link/IP/transport header parsing for summaries
 src-tauri/                Tauri app crate: control-plane commands that wrap the runtime
   src/lib.rs              holds the open Workflow + WorkflowState; registers commands
 ui/                       React + TypeScript frontend (Vite root)

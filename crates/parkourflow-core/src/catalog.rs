@@ -228,6 +228,15 @@ pub fn builtin_nodes() -> Vec<NodeDescriptor> {
                 .live(),
             ],
         },
+        NodeDescriptor {
+            type_id: "net.packet_summary".into(),
+            label: "Packet Summary".into(),
+            kind: NodeKind::Processor,
+            category: "Network".into(),
+            inputs: vec![Port::new("packets", DataType::PACKET)],
+            outputs: vec![Port::new("records", DataType::RECORD)],
+            properties: vec![],
+        },
     ]
 }
 
