@@ -10,6 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 parkourflow-core = { path = "crates/parkourflow-core" }
 parkourflow-files = { path = "crates/parkourflow-files" }
+parkourflow-debug = { path = "crates/parkourflow-debug" }
 parkourflow-net = { path = "crates/parkourflow-net" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

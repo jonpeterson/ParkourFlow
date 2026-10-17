@@ -24,6 +24,7 @@ pub mod error;
 pub mod lifecycle;
 pub mod node;
 pub mod packet;
+pub mod preview;
 pub mod property;
 pub mod record;
 pub mod runner;
@@ -37,6 +38,7 @@ pub use error::WorkflowError;
 pub use lifecycle::preflight;
 pub use node::{DataType, NodeKind, Port};
 pub use packet::Packet;
+pub use preview::{Preview, PreviewSlot, PreviewSnapshot};
 pub use property::{
     Apply, DeviceOption, FileMode, ListDevices, Property, PropertyType, PropertyValue,
 };

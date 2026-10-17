@@ -15,7 +15,7 @@ import { Inspector } from "./Inspector";
 import { MetadataNode, type MetadataNodeType } from "./MetadataNode";
 import { ErrorDialog, NodeActionsContext, type NodeActions } from "./NodeControls";
 import * as runtime from "./runtime";
-import type { EdgeStats, NodeDescriptor, NodeId, NodeState, Workflow } from "./runtime";
+import type { EdgeStats, NodeDescriptor, NodeId, NodeState, PreviewSnapshot, Workflow } from "./runtime";
 
 const nodeTypes = { metadata: MetadataNode };
 
@@ -27,6 +27,7 @@ function defaultPosition(index: number): XYPosition {
 function toFlowNodes(
   workflow: Workflow,
   statuses: Record<string, NodeState>,
+  previews: Record<string, PreviewSnapshot>,
   descriptors: NodeDescriptor[],
   previous: MetadataNodeType[],
 ): MetadataNodeType[] {
@@ -43,6 +44,7 @@ function toFlowNodes(
         node,
         category: descriptors.find((d) => d.type_id === node.type_id)?.category ?? "",
         state: statuses[id],
+        preview: previews[id],
       },
     };
   });
@@ -86,12 +88,13 @@ export default function App() {
 
   // Re-read the workflow and node status from the runtime and redraw.
   const refresh = useCallback(async () => {
-    const [workflow, statuses, stats] = await Promise.all([
+    const [workflow, statuses, stats, previews] = await Promise.all([
       runtime.getWorkflow(),
       runtime.nodeStatuses(),
       runtime.connectionStats(),
+      runtime.nodePreviews(),
     ]);
-    setNodes((prev) => toFlowNodes(workflow, statuses, descriptorsRef.current, prev));
+    setNodes((prev) => toFlowNodes(workflow, statuses, previews, descriptorsRef.current, prev));
     setEdges((prev) => {
       const selected = new Set(prev.filter((e) => e.selected).map((e) => e.id));
       return toFlowEdges(workflow, stats).map((e) => ({ ...e, selected: selected.has(e.id) }));
@@ -133,6 +136,17 @@ export default function App() {
     const unlisten = runtime.onNodeStatus(({ id, state }) =>
       setNodes((prev) =>
         prev.map((n) => (n.id === String(id) ? { ...n, data: { ...n.data, state } } : n)),
+      ),
+    );
+    return () => void unlisten.then((stop) => stop());
+  }, [setNodes]);
+
+  // Apply node previews pushed by the runtime (only the ones that changed).
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisten = runtime.onNodePreviews((previews) =>
+      setNodes((prev) =>
+        prev.map((n) => (n.id in previews ? { ...n, data: { ...n.data, preview: previews[n.id] } } : n)),
       ),
     );
     return () => void unlisten.then((stop) => stop());
@@ -271,7 +285,7 @@ export default function App() {
             <Controls />
           </ReactFlow>
         </main>
-        <Inspector node={inspected?.node} state={inspected?.state} onChanged={redraw} />
+        <Inspector node={inspected?.node} state={inspected?.state} preview={inspected?.preview} onChanged={redraw} />
       </div>
       {errorNodeData && (
         <ErrorDialog

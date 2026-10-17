@@ -1,0 +1,9 @@
+[package]
+name = "parkourflow-debug"
+description = "ParkourFlow debugging nodes: Record Preview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+parkourflow-core.workspace = true

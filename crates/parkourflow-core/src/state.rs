@@ -10,6 +10,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::error::WorkflowError;
+use crate::preview::{PreviewSlot, PreviewSnapshot};
 use crate::runner::{CancelToken, Wiring};
 use crate::transport::{Edge, EdgeStats};
 use crate::workflow::{ConnectionId, NodeId, Workflow};
@@ -75,6 +76,7 @@ pub struct WorkflowState {
     nodes: HashMap<NodeId, NodeState>,
     edges: HashMap<ConnectionId, Edge>,
     runs: HashMap<NodeId, CancelToken>,
+    previews: HashMap<NodeId, PreviewSlot>,
 }
 
 impl WorkflowState {
@@ -94,6 +96,7 @@ impl WorkflowState {
     ///   (and counting) the oldest items if a buffer shrank.
     pub fn reconcile(&mut self, workflow: &Workflow) {
         self.nodes.retain(|id, _| workflow.node(*id).is_some());
+        self.previews.retain(|id, _| workflow.node(*id).is_some());
         self.runs.retain(|id, cancel| {
             let keep = workflow.node(*id).is_some();
             if !keep {
@@ -111,6 +114,7 @@ impl WorkflowState {
 
         for node in workflow.nodes() {
             self.nodes.entry(node.id).or_default();
+            self.previews.entry(node.id).or_default();
         }
         for connection in workflow.connections() {
             let edge = self
@@ -257,11 +261,23 @@ impl WorkflowState {
                 (port.name.clone(), edges)
             })
             .collect();
-        Ok(Wiring { inputs, outputs })
+        let preview = self.previews.get(&id).cloned().unwrap_or_default();
+        Ok(Wiring {
+            inputs,
+            outputs,
+            preview,
+        })
     }
 
     pub fn edge(&self, id: ConnectionId) -> Option<&Edge> {
         self.edges.get(&id)
+    }
+
+    /// The latest preview of every node that has one.
+    pub fn previews(&self) -> impl Iterator<Item = (NodeId, PreviewSnapshot)> + '_ {
+        self.previews
+            .iter()
+            .filter_map(|(id, slot)| Some((*id, slot.snapshot()?)))
     }
 
     /// Queue depth, capacity, and drop count of every connection.

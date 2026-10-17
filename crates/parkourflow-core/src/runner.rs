@@ -30,6 +30,7 @@ use serde::Serialize;
 use crate::buffer::StreamItem;
 use crate::lifecycle::preflight;
 use crate::node::NodeKind;
+use crate::preview::PreviewSlot;
 use crate::property::{DeviceOption, ListDevices};
 use crate::transport::{Edge, FanOut, Receiver};
 use crate::workflow::{Node, NodeId};
@@ -193,6 +194,8 @@ pub struct Wiring {
     pub inputs: Vec<(String, Option<Edge>)>,
     /// Each output port and its edges (several if it fans out).
     pub outputs: Vec<(String, Vec<Edge>)>,
+    /// Where the node can publish its latest item for the UI.
+    pub preview: PreviewSlot,
 }
 
 /// An input port of a running node.
@@ -266,12 +269,15 @@ pub struct NodeContext {
     inputs: BTreeMap<String, Input>,
     outputs: BTreeMap<String, Output>,
     cancel: CancelToken,
+    preview: PreviewSlot,
 }
 
 impl NodeContext {
     /// Attaches to the wired edges. Each edge is reopened if a previous run
     /// closed it (see [`Edge::attach_sender`]).
+    /// The node's preview starts empty for the new run.
     pub fn new(node: NodeId, wiring: Wiring, pacing: Pacing, cancel: CancelToken) -> Self {
+        wiring.preview.clear();
         let inputs = wiring
             .inputs
             .into_iter()
@@ -308,7 +314,14 @@ impl NodeContext {
             inputs,
             outputs,
             cancel,
+            preview: wiring.preview,
         }
+    }
+
+    /// Where this node publishes its latest item for the UI (see
+    /// [`PreviewSlot::record`]).
+    pub fn preview(&self) -> &PreviewSlot {
+        &self.preview
     }
 
     pub fn node(&self) -> NodeId {

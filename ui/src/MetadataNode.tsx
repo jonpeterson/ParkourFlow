@@ -1,15 +1,16 @@
 // Generic node renderer: draws any node from its runtime metadata.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { NodeControls } from "./NodeControls";
-import { missingRequired, type NodeState, type WorkflowNode } from "./runtime";
+import { PreviewView } from "./PreviewView";
+import { missingRequired, type NodeState, type PreviewSnapshot, type WorkflowNode } from "./runtime";
 
 export type MetadataNodeType = Node<
-  { node: WorkflowNode; category: string; state?: NodeState },
+  { node: WorkflowNode; category: string; state?: NodeState; preview?: PreviewSnapshot },
   "metadata"
 >;
 
 export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
-  const { node, category, state } = data;
+  const { node, category, state, preview } = data;
   const missing = missingRequired(node);
   return (
     <div className={`pf-node pf-node--${node.kind}`}>
@@ -39,6 +40,7 @@ export function MetadataNode({ data }: NodeProps<MetadataNodeType>) {
         <NodeControls id={node.id} state={state} />
         {missing.length > 0 && <span className="pf-node__missing">needs {missing.join(", ")}</span>}
       </div>
+      {preview && <PreviewView snapshot={preview} maxRows={12} />}
     </div>
   );
 }

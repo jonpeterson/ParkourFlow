@@ -2,17 +2,20 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { NodeControls } from "./NodeControls";
+import { PreviewView } from "./PreviewView";
 import * as runtime from "./runtime";
-import type { DeviceOption, NodeState, Property, PropertyValue, WorkflowNode } from "./runtime";
+import type { DeviceOption, NodeState, PreviewSnapshot, Property, PropertyValue, WorkflowNode } from "./runtime";
 
 interface InspectorProps {
   node?: WorkflowNode;
   state?: NodeState;
+  /** The node's latest item, for nodes that publish one. */
+  preview?: PreviewSnapshot;
   /** Called after every edit attempt so the app can redraw from the runtime. */
   onChanged: () => Promise<void>;
 }
 
-export function Inspector({ node, state, onChanged }: InspectorProps) {
+export function Inspector({ node, state, preview, onChanged }: InspectorProps) {
   if (!node) {
     return (
       <aside className="pf-inspector">
@@ -33,6 +36,12 @@ export function Inspector({ node, state, onChanged }: InspectorProps) {
         {state?.error && <p className="pf-field__error">{state.error}</p>}
         {missing.length > 0 && !state?.error && <p className="pf-inspector__missing">Set {missing.join(", ")} before starting.</p>}
       </header>
+      {preview && (
+        <section className="pf-inspector__preview">
+          <h3>Latest item</h3>
+          <PreviewView snapshot={preview} />
+        </section>
+      )}
       {node.properties.length === 0 && <p className="pf-inspector__empty">This node has no properties.</p>}
       {node.properties.map((p) => (
         <PropertyField

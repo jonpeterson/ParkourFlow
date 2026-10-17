@@ -237,6 +237,15 @@ pub fn builtin_nodes() -> Vec<NodeDescriptor> {
             outputs: vec![Port::new("records", DataType::RECORD)],
             properties: vec![],
         },
+        NodeDescriptor {
+            type_id: "debug.record_preview".into(),
+            label: "Record Preview".into(),
+            kind: NodeKind::Sink,
+            category: "Debug".into(),
+            inputs: vec![Port::new("records", DataType::RECORD)],
+            outputs: vec![],
+            properties: vec![],
+        },
     ]
 }
 

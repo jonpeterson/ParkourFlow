@@ -185,3 +185,25 @@ export const onNodeStatus = (handler: (event: NodeStatusEvent) => void): Promise
 export const onConnectionStats = (
   handler: (stats: Record<string, EdgeStats>) => void,
 ): Promise<UnlistenFn> => listen<Record<string, EdgeStats>>("connection-stats", (e) => handler(e.payload));
+
+/** A display-ready copy of a node's latest item. Mirrors `parkourflow_core::Preview`. */
+export type Preview =
+  | { kind: "record"; columns: string[]; values: string[]; omitted: number }
+  | { kind: "unsupported" };
+
+export interface PreviewSnapshot {
+  /** Items seen since the node last started. */
+  received: number;
+  /** The latest item's sequence number in its stream. */
+  sequence: number;
+  latest: Preview;
+}
+
+/** The latest preview of every node that has one, keyed by node id. */
+export const nodePreviews = () => invoke<Record<string, PreviewSnapshot>>("node_previews");
+
+/** Calls `handler` with the previews that changed, sampled a few times a second. */
+export const onNodePreviews = (
+  handler: (previews: Record<string, PreviewSnapshot>) => void,
+): Promise<UnlistenFn> =>
+  listen<Record<string, PreviewSnapshot>>("node-previews", (e) => handler(e.payload));

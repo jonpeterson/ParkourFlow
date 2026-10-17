@@ -362,3 +362,69 @@ body,
 .pf-edge-label--busy .react-flow__edge-text { fill: var(--pf-processor); }
 .pf-edge-label--dropping .react-flow__edge-text { fill: #c53030; font-weight: 600; }
 .pf-edge-label .react-flow__edge-textbg { fill: var(--pf-panel); }
+
+.pf-preview {
+  max-width: 320px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--pf-border);
+  font-size: 11px;
+  cursor: text;
+  user-select: text;
+}
+
+.pf-inspector .pf-preview {
+  max-width: none;
+  padding: 0;
+  border-top: 0;
+}
+
+.pf-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.pf-preview th,
+.pf-preview td {
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+  text-align: left;
+}
+
+.pf-preview th {
+  width: 38%;
+  padding-right: 8px;
+  color: var(--pf-muted);
+  font-weight: 500;
+}
+
+.pf-preview td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pf-inspector .pf-preview td {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pf-preview__meta {
+  margin-bottom: 4px;
+  color: var(--pf-muted);
+  font-size: 10px;
+}
+
+.pf-preview__empty {
+  margin: 0;
+  color: var(--pf-muted);
+}
+
+.pf-inspector__preview h3 {
+  margin: 0 0 6px;
+  color: var(--pf-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}

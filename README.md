@@ -279,6 +279,18 @@ Why libpcap rather than a pure-Rust capture library: it gives kernel-side BPF fi
 | Linux | The `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities, or root. |
 | Windows | [Npcap](https://npcap.com) installed. Unless you restrict it to administrators, normal users can capture. |
 
+#### Debug nodes and previews
+
+`parkourflow-debug` implements **Record Preview** (`debug.record_preview`), a sink that shows the latest `Record` it received. The latest record appears on the node card (the first 12 columns) and in full in the inspector, along with how many records arrived and the latest one's sequence number. Wire it anywhere a `Record` stream flows, for example **Read Network Interface → Packet Summary → Record Preview**.
+
+How previews reach the UI without moving payloads into JavaScript:
+
+- **Each node has a preview slot** (`PreviewSlot`, in `parkourflow-core/src/preview.rs`), handed to its runner as `NodeContext::preview()`. Recording an item keeps a shared reference to it: one lock and a reference-count bump, with no copying.
+- **The shell samples slots every 250 ms,** along with edge stats. It emits a `node-previews` event holding only the previews that changed. On a fast stream, the UI shows the latest record at each sample, not every record.
+- **A preview is a cut-down copy:** at most 64 columns, values cut to 200 characters. Payload types without a preview yet show "No preview for this data type."
+- **Lifetime:** a slot empties when its node starts a new run. It keeps the last record after the node stops, so you can still read it.
+- **Never in the way:** Record Preview takes items as fast as they come, so it never holds up the stream it's attached to.
+
 ### Node properties
 
 Each node type declares typed configuration fields, called **properties**, alongside its ports. The UI's inspector renders a form for the selected node from these declarations, so most node types need no frontend code.
@@ -422,9 +434,11 @@ crates/parkourflow-core/  Rust runtime (no Tauri dependency)
   src/runner.rs           node execution: NodeRunner, NodeContext, NodeRegistry, cancellation
   src/record.rs           Record, the payload of Record streams
   src/packet.rs           Packet, the payload of Packet streams
+  src/preview.rs          preview slots: the latest item a node saw, cut down for the UI
 crates/parkourflow-files/ file nodes: CSV Source and CSV Writer
   src/csv.rs              the CSV node runners
   src/format.rs           CSV row reader and writer (wraps the csv crate)
+crates/parkourflow-debug/ debugging nodes: Record Preview
 crates/parkourflow-net/   network nodes: Read Network Interface (libpcap), Packet Summary
   src/interface.rs        live capture source and interface listing
   src/summary.rs          Packet Summary runner
@@ -437,6 +451,7 @@ ui/                       React + TypeScript frontend (Vite root)
   src/MetadataNode.tsx    generic node renderer driven by node metadata
   src/Inspector.tsx       generic property form for the selected node
   src/NodeControls.tsx    start/stop controls and the error dialog
+  src/PreviewView.tsx     column/value table for a node's latest item
 ```
 
 ## Contributing

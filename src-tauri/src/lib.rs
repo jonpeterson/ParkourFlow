@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use parkourflow_core::{
     CancelToken, ConnectionId, DeviceOption, EdgeStats, GroupId, Node, NodeDescriptor, NodeId,
-    NodeRegistry, NodeState, OverflowPolicy, PortRef, PropertyValue, Wiring, Workflow,
-    WorkflowError, WorkflowState,
+    NodeRegistry, NodeState, OverflowPolicy, PortRef, PreviewSnapshot, PropertyValue, Wiring,
+    Workflow, WorkflowError, WorkflowState,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -16,7 +16,11 @@ const NODE_STATUS_EVENT: &str = "node-status";
 /// Event carrying every connection's [`EdgeStats`], sent when they change.
 const CONNECTION_STATS_EVENT: &str = "connection-stats";
 
-/// How often edge telemetry is sampled.
+/// Event carrying the previews that changed since the last sample, keyed by
+/// node id.
+const NODE_PREVIEWS_EVENT: &str = "node-previews";
+
+/// How often edge telemetry and previews are sampled.
 const STATS_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,25 +174,53 @@ fn stop<H: Host>(host: &H, id: NodeId) -> Result<(), String> {
     Ok(())
 }
 
-/// Emits `connection-stats` whenever any edge's queue depth, capacity, or
-/// drop count changed since the last sample.
-fn publish_edge_stats(app: AppHandle) {
-    let mut last = BTreeMap::new();
+/// Samples telemetry: emits `connection-stats` whenever any edge's queue
+/// depth, capacity, or drop count changed, and `node-previews` with the
+/// previews that changed.
+fn publish_telemetry(app: AppHandle) {
+    let mut last_stats = BTreeMap::new();
+    let mut last_previews = BTreeMap::new();
     loop {
         std::thread::sleep(STATS_INTERVAL);
-        let Ok(stats) = app
-            .state::<AppState>()
-            .read(|s| s.state.edge_stats().collect::<BTreeMap<_, _>>())
-        else {
+        let Ok((stats, previews)) = app.state::<AppState>().read(|s| {
+            (
+                s.state.edge_stats().collect::<BTreeMap<_, _>>(),
+                s.state.previews().collect::<BTreeMap<_, _>>(),
+            )
+        }) else {
             continue;
         };
-        if stats != last {
+        if stats != last_stats {
             if let Err(e) = app.emit(CONNECTION_STATS_EVENT, &stats) {
                 eprintln!("failed to emit {CONNECTION_STATS_EVENT}: {e}");
             }
-            last = stats;
+            last_stats = stats;
         }
+        let changed = changed_previews(&last_previews, &previews);
+        if !changed.is_empty() {
+            if let Err(e) = app.emit(NODE_PREVIEWS_EVENT, &changed) {
+                eprintln!("failed to emit {NODE_PREVIEWS_EVENT}: {e}");
+            }
+        }
+        last_previews = previews;
     }
+}
+
+/// The previews in `now` that are new or differ from `before`.
+fn changed_previews<'a>(
+    before: &BTreeMap<NodeId, PreviewSnapshot>,
+    now: &'a BTreeMap<NodeId, PreviewSnapshot>,
+) -> BTreeMap<NodeId, &'a PreviewSnapshot> {
+    now.iter()
+        .filter(|(id, snapshot)| before.get(id) != Some(snapshot))
+        .map(|(id, snapshot)| (*id, snapshot))
+        .collect()
+}
+
+/// The latest preview of every node that has one, keyed by node id.
+#[tauri::command]
+fn node_previews(app: State<AppState>) -> Result<BTreeMap<NodeId, PreviewSnapshot>, String> {
+    app.read(|s| s.state.previews().collect())
 }
 
 /// Control plane: returns the node types the runtime provides.
@@ -341,6 +373,7 @@ fn list_device_options(app: State<AppState>, class: String) -> Result<Vec<Device
 /// The node types this build can run.
 fn registry() -> NodeRegistry {
     let mut registry = NodeRegistry::new();
+    parkourflow_debug::register(&mut registry);
     parkourflow_files::register(&mut registry);
     parkourflow_net::register(&mut registry);
     registry
@@ -354,8 +387,8 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::Builder::new()
-                .name("edge-stats".into())
-                .spawn(move || publish_edge_stats(handle))?;
+                .name("telemetry".into())
+                .spawn(move || publish_telemetry(handle))?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -363,6 +396,7 @@ pub fn run() {
             runtime_version,
             get_workflow,
             node_statuses,
+            node_previews,
             connection_stats,
             add_node,
             remove_node,
@@ -698,6 +732,30 @@ mod tests {
         let interfaces = registry().device_options("network_interface").unwrap();
         assert!(!interfaces.is_empty());
         assert_eq!(registry().device_options("camera"), Ok(vec![]));
+    }
+
+    #[test]
+    fn only_changed_previews_are_sent() {
+        use parkourflow_core::{Preview, PreviewSnapshot};
+
+        let snapshot = |received| PreviewSnapshot {
+            received,
+            sequence: received - 1,
+            latest: Preview::Unsupported,
+        };
+        let id = |n: u64| -> NodeId { serde_json::from_value(n.into()).unwrap() };
+        let before = BTreeMap::from([(id(1), snapshot(5)), (id(2), snapshot(9))]);
+        let now = BTreeMap::from([
+            (id(1), snapshot(5)),
+            (id(2), snapshot(12)),
+            (id(3), snapshot(1)),
+        ]);
+        let changed = changed_previews(&before, &now);
+        assert_eq!(
+            changed.keys().copied().collect::<Vec<_>>(),
+            vec![id(2), id(3)]
+        );
+        assert!(changed_previews(&now, &now).is_empty());
     }
 
     #[test]
